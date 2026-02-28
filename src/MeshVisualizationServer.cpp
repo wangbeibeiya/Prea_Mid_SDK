@@ -26,6 +26,9 @@
 #include <sstream>
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
+#include <thread>
+#include <chrono>
 
 // 全局渲染会话状态（用于Socket命令操作）
 namespace {
@@ -33,15 +36,18 @@ namespace {
         vtkRenderWindow* renderWindow = nullptr;
         vtkRenderer* renderer = nullptr;
         vtkActorCollection* actors = nullptr;
+        vtkActorCollection* edgeActors = nullptr;  // 边界线框叠加层（替代 EdgeVisibility 避免崩溃）
         vtkRenderWindowInteractor* interactor = nullptr;
         void* windowHandle = nullptr;
         const PREPRO_BASE_NAMESPACE::PFData* renderData = nullptr;
         int visualizationType = 1; // 默认网格类型
+        bool edgesVisible = true;  // 边界显示状态
         
         void clear() {
             renderWindow = nullptr;
             renderer = nullptr;
             actors = nullptr;
+            edgeActors = nullptr;
             interactor = nullptr;
             windowHandle = nullptr;
             renderData = nullptr;
@@ -50,6 +56,34 @@ namespace {
     
     RenderSession g_renderSession;
     std::mutex g_sessionMutex;
+    
+    // 全局服务器实例指针（用于在SetRenderSession中启动服务器）
+    MeshVisualizationServer* g_serverInstance = nullptr;
+    std::mutex g_serverInstanceMutex;
+}
+
+// 导出函数：获取服务器实例（供 RenderProcessor 访问）
+extern "C" {
+    MeshVisualizationServer* GetServerInstance() {
+        std::lock_guard<std::mutex> lock(g_serverInstanceMutex);
+        return g_serverInstance;
+    }
+    
+    void SetServerInstance(MeshVisualizationServer* server) {
+        std::lock_guard<std::mutex> lock(g_serverInstanceMutex);
+        g_serverInstance = server;
+    }
+    
+    bool IsServerRunning(MeshVisualizationServer* server) {
+        if (!server) return false;
+        return server->isRunning();
+    }
+    
+    void StopServer(MeshVisualizationServer* server) {
+        if (server) {
+            server->stop();
+        }
+    }
 }
 
 MeshVisualizationServer::MeshVisualizationServer(int port)
@@ -64,11 +98,20 @@ MeshVisualizationServer::MeshVisualizationServer(int port)
     , m_listenSocket(-1)
 #endif
 {
+    // 注册为全局服务器实例（用于在SetRenderSession中启动）
+    std::lock_guard<std::mutex> lock(g_serverInstanceMutex);
+    g_serverInstance = this;
 }
 
 MeshVisualizationServer::~MeshVisualizationServer()
 {
     stop();
+    // 清除全局服务器实例指针
+    std::lock_guard<std::mutex> lock(g_serverInstanceMutex);
+    if (g_serverInstance == this)
+    {
+        g_serverInstance = nullptr;
+    }
 }
 
 bool MeshVisualizationServer::start()
@@ -205,22 +248,38 @@ void MeshVisualizationServer::stop()
 
 void MeshVisualizationServer::setRenderWindowHandle(void* windowHandle)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_renderWindowHandle = windowHandle;
+    // 先更新成员变量（需要m_mutex）
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_renderWindowHandle = windowHandle;
+    }
     
-    std::lock_guard<std::mutex> sessionLock(g_sessionMutex);
-    g_renderSession.windowHandle = windowHandle;
+    // 然后更新全局会话状态（需要g_sessionMutex）
+    // 注意：先释放m_mutex再获取g_sessionMutex，避免死锁
+    {
+        std::lock_guard<std::mutex> sessionLock(g_sessionMutex);
+        g_renderSession.windowHandle = windowHandle;
+    }
 }
 
 // setRenderData方法已移除，因为PFData不能复制，数据通过SetRenderSession在RenderProcessor中设置
 
 void MeshVisualizationServer::setVisualizationType(int type)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_visualizationType = type;
+    // 先更新成员变量（需要m_mutex）
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_visualizationType = type;
+    }
     
-    std::lock_guard<std::mutex> sessionLock(g_sessionMutex);
-    g_renderSession.visualizationType = type;
+    // 然后更新全局会话状态（需要g_sessionMutex）
+    // 注意：先释放m_mutex再获取g_sessionMutex，避免死锁
+    {
+        std::lock_guard<std::mutex> sessionLock(g_sessionMutex);
+        g_renderSession.visualizationType = type;
+    }
+    
+    std::cout << "[MeshVisualizationServer] 可视化类型已设置为: " << type << std::endl;
 }
 
 void MeshVisualizationServer::serverLoop()
@@ -342,7 +401,8 @@ json MeshVisualizationServer::processCommand(const json& commandJson)
     std::string command = commandJson["command"].get<std::string>();
     json params = commandJson.value("params", json::object());
     
-    std::lock_guard<std::mutex> lock(g_sessionMutex);
+    // 注意：不在processCommand中加锁，让每个处理函数自己管理锁，避免死锁
+    // 各个处理函数会根据需要获取 g_sessionMutex
     
     if (command == "GetWindowHandle")
     {
@@ -396,14 +456,72 @@ json MeshVisualizationServer::handleGetWindowHandle(const json& params)
 {
     json response;
     
-    if (g_renderSession.windowHandle)
+    // 从全局会话中获取窗口句柄和窗口对象（需要加锁）
+    void* windowHandle = nullptr;
+    vtkRenderWindow* renderWindow = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_sessionMutex);
+        windowHandle = g_renderSession.windowHandle;
+        renderWindow = g_renderSession.renderWindow;
+    }
+    
+    // 如果窗口句柄无效，尝试重新获取
+    if (!windowHandle && renderWindow)
     {
 #ifdef _WIN32
-        response["success"] = true;
-        response["windowHandle"] = reinterpret_cast<uintptr_t>(g_renderSession.windowHandle);
+        // 强制渲染以确保窗口创建
+        renderWindow->Render();
+        
+        // 等待窗口创建（最多等待1秒）
+        for (int i = 0; i < 20; ++i)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            renderWindow->Render();
+            windowHandle = reinterpret_cast<void*>(renderWindow->GetGenericWindowId());
+            if (windowHandle)
+            {
+                HWND hwnd = reinterpret_cast<HWND>(windowHandle);
+                if (IsWindow(hwnd))
+                {
+                    // 更新全局会话中的窗口句柄
+                    {
+                        std::lock_guard<std::mutex> lock(g_sessionMutex);
+                        g_renderSession.windowHandle = windowHandle;
+                    }
+                    break;
+                }
+            }
+        }
+#endif
+    }
+    
+    if (windowHandle)
+    {
+#ifdef _WIN32
+        // 验证窗口句柄是否有效
+        HWND hwnd = reinterpret_cast<HWND>(windowHandle);
+        if (IsWindow(hwnd))
+        {
+            response["success"] = true;
+            response["windowHandle"] = reinterpret_cast<uintptr_t>(windowHandle);
+            
+            // 获取窗口标题（用于调试）
+            char windowTitle[256] = {0};
+            GetWindowTextA(hwnd, windowTitle, sizeof(windowTitle));
+            if (strlen(windowTitle) > 0)
+            {
+                response["windowTitle"] = std::string(windowTitle);
+            }
+        }
+        else
+        {
+            response["success"] = false;
+            response["error"] = "窗口句柄无效（窗口不存在）";
+            response["windowHandle"] = reinterpret_cast<uintptr_t>(windowHandle);
+        }
 #else
         response["success"] = true;
-        response["windowHandle"] = reinterpret_cast<uintptr_t>(g_renderSession.windowHandle);
+        response["windowHandle"] = reinterpret_cast<uintptr_t>(windowHandle);
 #endif
     }
     else
@@ -418,6 +536,8 @@ json MeshVisualizationServer::handleGetWindowHandle(const json& params)
 json MeshVisualizationServer::handleSetTransparency(const json& params)
 {
     json response;
+    
+    std::lock_guard<std::mutex> lock(g_sessionMutex);
     
     if (!g_renderSession.actors)
     {
@@ -451,27 +571,25 @@ json MeshVisualizationServer::handleToggleEdges(const json& params)
 {
     json response;
     
-    if (!g_renderSession.actors)
+    std::lock_guard<std::mutex> lock(g_sessionMutex);
+    
+    // 使用线框叠加层替代 EdgeVisibility，避免 VTK 崩溃
+    if (!g_renderSession.edgeActors)
     {
         response["success"] = false;
-        response["error"] = "渲染actors未初始化";
+        response["error"] = "边界叠加层未初始化（需通过主渲染流程创建）";
         return response;
     }
     
     bool enable = params.value("enable", true);
+    g_renderSession.edgesVisible = enable;
     
-    g_renderSession.actors->InitTraversal();
+    g_renderSession.edgeActors->InitTraversal();
     vtkActor* actor = nullptr;
-    while ((actor = g_renderSession.actors->GetNextActor()) != nullptr)
+    while ((actor = g_renderSession.edgeActors->GetNextActor()) != nullptr)
     {
-        if (enable)
-        {
-            actor->GetProperty()->EdgeVisibilityOn();
-        }
-        else
-        {
-            actor->GetProperty()->EdgeVisibilityOff();
-        }
+        if (actor)
+            actor->SetVisibility(enable ? 1 : 0);
     }
     
     if (g_renderSession.renderWindow)
@@ -488,6 +606,8 @@ json MeshVisualizationServer::handleSetRepresentation(const json& params)
 {
     json response;
     
+    std::lock_guard<std::mutex> lock(g_sessionMutex);
+    
     if (!g_renderSession.actors)
     {
         response["success"] = false;
@@ -502,16 +622,23 @@ json MeshVisualizationServer::handleSetRepresentation(const json& params)
     while ((actor = g_renderSession.actors->GetNextActor()) != nullptr)
     {
         if (representation == "surface")
-        {
             actor->GetProperty()->SetRepresentationToSurface();
-        }
         else if (representation == "wireframe")
-        {
             actor->GetProperty()->SetRepresentationToWireframe();
-        }
         else if (representation == "points")
-        {
             actor->GetProperty()->SetRepresentationToPoints();
+    }
+    
+    // 线框/点模式下隐藏边界叠加层
+    if (g_renderSession.edgeActors)
+    {
+        bool showEdges = (representation == "surface" && g_renderSession.edgesVisible);
+        g_renderSession.edgeActors->InitTraversal();
+        vtkActor* edgeActor = nullptr;
+        while ((edgeActor = g_renderSession.edgeActors->GetNextActor()) != nullptr)
+        {
+            if (edgeActor)
+                edgeActor->SetVisibility(showEdges ? 1 : 0);
         }
     }
     
@@ -529,6 +656,8 @@ json MeshVisualizationServer::handleToggleWireframe(const json& params)
 {
     json response;
     
+    std::lock_guard<std::mutex> lock(g_sessionMutex);
+    
     if (!g_renderSession.actors)
     {
         response["success"] = false;
@@ -543,12 +672,20 @@ json MeshVisualizationServer::handleToggleWireframe(const json& params)
     while ((actor = g_renderSession.actors->GetNextActor()) != nullptr)
     {
         if (enable)
-        {
             actor->GetProperty()->SetRepresentationToWireframe();
-        }
         else
-        {
             actor->GetProperty()->SetRepresentationToSurface();
+    }
+    
+    if (g_renderSession.edgeActors)
+    {
+        bool showEdges = (!enable && g_renderSession.edgesVisible);
+        g_renderSession.edgeActors->InitTraversal();
+        vtkActor* edgeActor = nullptr;
+        while ((edgeActor = g_renderSession.edgeActors->GetNextActor()) != nullptr)
+        {
+            if (edgeActor)
+                edgeActor->SetVisibility(showEdges ? 1 : 0);
         }
     }
     
@@ -565,6 +702,8 @@ json MeshVisualizationServer::handleToggleWireframe(const json& params)
 json MeshVisualizationServer::handleTogglePoints(const json& params)
 {
     json response;
+    
+    std::lock_guard<std::mutex> lock(g_sessionMutex);
     
     if (!g_renderSession.actors)
     {
@@ -590,6 +729,18 @@ json MeshVisualizationServer::handleTogglePoints(const json& params)
         }
     }
     
+    if (g_renderSession.edgeActors)
+    {
+        bool showEdges = (!enable && g_renderSession.edgesVisible);
+        g_renderSession.edgeActors->InitTraversal();
+        vtkActor* edgeActor = nullptr;
+        while ((edgeActor = g_renderSession.edgeActors->GetNextActor()) != nullptr)
+        {
+            if (edgeActor)
+                edgeActor->SetVisibility(showEdges ? 1 : 0);
+        }
+    }
+    
     if (g_renderSession.renderWindow)
     {
         g_renderSession.renderWindow->Render();
@@ -603,6 +754,8 @@ json MeshVisualizationServer::handleTogglePoints(const json& params)
 json MeshVisualizationServer::handleToggleColorByGroup(const json& params)
 {
     json response;
+    
+    std::lock_guard<std::mutex> lock(g_sessionMutex);
     
     if (!g_renderSession.actors)
     {
@@ -656,6 +809,8 @@ json MeshVisualizationServer::handleResetCamera(const json& params)
 {
     json response;
     
+    std::lock_guard<std::mutex> lock(g_sessionMutex);
+    
     if (!g_renderSession.renderer)
     {
         response["success"] = false;
@@ -678,6 +833,8 @@ json MeshVisualizationServer::handleRender(const json& params)
 {
     json response;
     
+    std::lock_guard<std::mutex> lock(g_sessionMutex);
+    
     if (!g_renderSession.renderWindow)
     {
         response["success"] = false;
@@ -694,6 +851,8 @@ json MeshVisualizationServer::handleRender(const json& params)
 json MeshVisualizationServer::handleSetSize(const json& params)
 {
     json response;
+    
+    std::lock_guard<std::mutex> lock(g_sessionMutex);
     
     if (!g_renderSession.renderWindow)
     {
@@ -779,21 +938,120 @@ int MeshVisualizationServer::receiveData(SOCKET clientSocket, char* buffer, int 
 // 导出函数：设置渲染会话（供RenderProcessor调用）
 extern "C" {
     void SetRenderSession(vtkRenderWindow* window, vtkRenderer* renderer, 
-                         vtkActorCollection* actors, vtkRenderWindowInteractor* interactor)
+                         vtkActorCollection* actors, vtkRenderWindowInteractor* interactor,
+                         vtkActorCollection* edgeActors = nullptr)
     {
-        std::lock_guard<std::mutex> lock(g_sessionMutex);
-        g_renderSession.renderWindow = window;
-        g_renderSession.renderer = renderer;
-        g_renderSession.actors = actors;
-        g_renderSession.interactor = interactor;
+        void* windowHandle = nullptr;
+        int visualizationType = 0;
+        bool shouldStartServer = false;
         
-        if (window)
+        // 第一步：在锁内完成所有需要 g_sessionMutex 的操作
         {
+            std::lock_guard<std::mutex> lock(g_sessionMutex);
+            g_renderSession.renderWindow = window;
+            g_renderSession.renderer = renderer;
+            g_renderSession.actors = actors;
+            g_renderSession.edgeActors = edgeActors;
+            g_renderSession.interactor = interactor;
+            
+            if (window)
+            {
 #ifdef _WIN32
-            g_renderSession.windowHandle = reinterpret_cast<void*>(window->GetGenericWindowId());
+                // 强制渲染以确保窗口创建
+                window->Render();
+                
+                // 获取窗口句柄，并验证窗口是否有效
+                windowHandle = reinterpret_cast<void*>(window->GetGenericWindowId());
+                if (windowHandle)
+                {
+                    HWND hwnd = reinterpret_cast<HWND>(windowHandle);
+                    // 如果窗口句柄无效，等待窗口完全创建
+                    if (!IsWindow(hwnd))
+                    {
+                        // 等待窗口创建（最多等待2秒，每50ms检查一次）
+                        for (int i = 0; i < 40; ++i)
+                        {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                            // 再次强制渲染
+                            window->Render();
+                            windowHandle = reinterpret_cast<void*>(window->GetGenericWindowId());
+                            hwnd = reinterpret_cast<HWND>(windowHandle);
+                            if (IsWindow(hwnd))
+                            {
+                                std::cout << "[SetRenderSession] 窗口已创建，等待了 " << (i + 1) * 50 << "ms" << std::endl;
+                                break;
+                            }
+                        }
+                        if (!IsWindow(hwnd))
+                        {
+                            std::cerr << "[SetRenderSession] 警告: 窗口句柄无效，窗口可能尚未完全创建" << std::endl;
+                            windowHandle = nullptr;
+                        }
+                    }
+                    else
+                    {
+                        std::cout << "[SetRenderSession] 窗口句柄有效: " << hwnd << std::endl;
+                    }
+                }
+                else
+                {
+                    std::cerr << "[SetRenderSession] 警告: 无法获取窗口句柄" << std::endl;
+                }
 #else
-            g_renderSession.windowHandle = window->GetGenericWindowId();
+                windowHandle = window->GetGenericWindowId();
 #endif
+                g_renderSession.windowHandle = windowHandle;
+            }
+            
+            visualizationType = g_renderSession.visualizationType;
+            
+            // 调试信息：输出当前状态
+            std::cout << "[SetRenderSession] 调试信息:" << std::endl;
+            std::cout << "  windowHandle: " << (windowHandle ? "有效" : "无效") << std::endl;
+            std::cout << "  visualizationType: " << visualizationType << std::endl;
+            std::cout << "  g_serverInstance: " << (g_serverInstance ? "存在" : "不存在") << std::endl;
+            if (g_serverInstance)
+            {
+                std::cout << "  isRunning: " << (g_serverInstance->isRunning() ? "是" : "否") << std::endl;
+            }
+            
+            // 保存需要的信息，然后释放锁
+            shouldStartServer = (windowHandle && visualizationType == 1);
+        } // 释放 g_sessionMutex 锁，避免死锁
+        
+        // 如果窗口已显示且服务器正在运行，设置窗口句柄
+        // 注意：服务器已在程序启动时启动，这里只需要设置窗口句柄
+        if (windowHandle && visualizationType == 1) // 1 = EMesh
+        {
+            std::lock_guard<std::mutex> serverLock(g_serverInstanceMutex);
+            if (g_serverInstance && g_serverInstance->isRunning())
+            {
+                try
+                {
+                    // 设置窗口句柄（此时 g_sessionMutex 已释放，不会死锁）
+                    g_serverInstance->setRenderWindowHandle(windowHandle);
+                    std::cout << "[SetRenderSession] 窗口句柄已设置到服务器" << std::endl;
+                }
+                catch (const std::exception& e)
+                {
+                    std::cerr << "[SetRenderSession] 设置窗口句柄时发生异常: " << e.what() << std::endl;
+                }
+                catch (...)
+                {
+                    std::cerr << "[SetRenderSession] 设置窗口句柄时发生未知异常" << std::endl;
+                }
+            }
+            else
+            {
+                if (!g_serverInstance)
+                {
+                    std::cerr << "[SetRenderSession] 警告: 全局服务器实例不存在" << std::endl;
+                }
+                else if (!g_serverInstance->isRunning())
+                {
+                    std::cerr << "[SetRenderSession] 警告: 服务器未运行" << std::endl;
+                }
+            }
         }
     }
 }

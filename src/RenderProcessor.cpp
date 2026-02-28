@@ -47,17 +47,47 @@
 #include <vtkActorCollection.h>
 #include <vtkTextActor.h>
 #include <vtkTextProperty.h>
+#include <vtkCallbackCommand.h>
+#include <vtkCommand.h>
 #include <base/pfGroupData.h>
 #include <map>
 #include <vector>
 #include <string>
+#include <thread>
+#include <chrono>
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
-// 前向声明：设置渲染会话（供Socket服务器使用）
+// 注意：不直接包含 MeshVisualizationServer.h，避免 Windows Socket 头文件冲突
+// 使用前向声明和 extern "C" 函数
+class MeshVisualizationServer;  // 前向声明
+
 extern "C" {
-    void SetRenderSession(vtkRenderWindow*, vtkRenderer*, vtkActorCollection*, vtkRenderWindowInteractor*);
+    void SetRenderSession(vtkRenderWindow*, vtkRenderer*, vtkActorCollection*, vtkRenderWindowInteractor*, vtkActorCollection* edgeActors = nullptr);
+    MeshVisualizationServer* GetServerInstance();
+    void SetServerInstance(MeshVisualizationServer*);
+    bool IsServerRunning(MeshVisualizationServer*);
+    void StopServer(MeshVisualizationServer*);
+}
+
+// 窗口关闭回调函数：当窗口关闭时停止 Socket 服务器
+void OnWindowClose(vtkObject* caller, unsigned long eventId, void* clientData, void* callData)
+{
+    // VTK 窗口关闭时触发 ExitEvent
+    if (eventId == vtkCommand::ExitEvent)
+    {
+        std::cout << "[RenderProcessor] 检测到窗口关闭事件，准备停止 Socket 服务器..." << std::endl;
+        
+        // 从全局状态获取服务器实例并停止
+        MeshVisualizationServer* server = GetServerInstance();
+        if (server && IsServerRunning(server))
+        {
+            std::cout << "[RenderProcessor] 正在停止 Socket 服务器..." << std::endl;
+            StopServer(server);
+            std::cout << "[RenderProcessor] Socket 服务器已停止" << std::endl;
+        }
+    }
 }
 
 // 自定义交互样式类，支持键盘快捷键控制网格可视化
@@ -68,62 +98,89 @@ public:
     vtkTypeMacro(MeshInteractorStyle, vtkInteractorStyleTrackballCamera);
 
     void SetRenderer(vtkRenderer* renderer) { m_renderer = renderer; }
-    void SetActors(vtkActorCollection* actors) { m_actors = actors; }
+    void SetActors(vtkActorCollection* actors) 
+    { 
+        m_actors = actors; 
+        m_actorsRef = actors;  // 强引用防止悬空指针
+    }
+    void SetEdgeActors(vtkActorCollection* edgeActors) 
+    { 
+        m_edgeActors = edgeActors; 
+        m_edgeActorsRef = edgeActors;  // 强引用
+    }
 
     virtual void OnKeyPress() override
     {
-        std::string key = this->GetInteractor()->GetKeySym();
+        vtkRenderWindowInteractor* rwi = this->GetInteractor();
+        std::string key = rwi->GetKeySym();
+        bool altPressed = (rwi->GetAltKey() != 0);
         
-        if (key == "s" || key == "S")
+        // 仅当 Alt 按下时响应自定义快捷键（Alt+S, Alt+W 等）
+        if (altPressed && (key == "s" || key == "S"))
         {
-            // 切换显示模式：实体 -> 线框 -> 点 -> 实体
             CycleRepresentation();
         }
-        else if (key == "w" || key == "W")
+        else if (altPressed && (key == "w" || key == "W"))
         {
-            // 切换线框模式
             ToggleWireframe();
         }
-        else if (key == "p" || key == "P")
+        else if (altPressed && (key == "p" || key == "P"))
         {
-            // 切换点模式
             TogglePoints();
         }
-        else if (key == "e" || key == "E")
+        else if (altPressed && (key == "e" || key == "E"))
         {
-            // 切换边界显示
             ToggleEdges();
         }
-        else if (key == "t" || key == "T")
+        else if (altPressed && (key == "t" || key == "T"))
         {
-            // 切换透明度
             ToggleTransparency();
         }
-        else if (key == "c" || key == "C")
+        else if (altPressed && (key == "c" || key == "C"))
         {
-            // 切换按组着色
             ToggleColorByGroup();
         }
-        else if (key == "r" || key == "R")
+        else if (altPressed && (key == "r" || key == "R"))
         {
-            // 重置视图
             ResetCamera();
         }
-        else if (key == "h" || key == "H")
+        else if (altPressed && (key == "h" || key == "H"))
         {
-            // 显示/隐藏帮助信息
             ToggleHelp();
         }
         else
         {
-            // 调用父类方法处理其他按键
             vtkInteractorStyleTrackballCamera::OnKeyPress();
         }
+    }
+
+    // 重写 OnChar 以阻止 VTK 默认将 'e' 映射为 ExitCallback（否则按 E 会退出程序）
+    virtual void OnChar() override
+    {
+        vtkRenderWindowInteractor* rwi = this->GetInteractor();
+        if (rwi->GetControlKey() || rwi->GetAltKey())
+        {
+            vtkInteractorStyleTrackballCamera::OnChar();
+            return;
+        }
+        int keyCode = rwi->GetKeyCode();
+        // 我们的自定义快捷键：不传给父类，避免 'e' 触发 ExitCallback
+        if (keyCode == 'e' || keyCode == 'E' || keyCode == 's' || keyCode == 'S' ||
+            keyCode == 'w' || keyCode == 'W' || keyCode == 'p' || keyCode == 'P' ||
+            keyCode == 't' || keyCode == 'T' || keyCode == 'c' || keyCode == 'C' ||
+            keyCode == 'r' || keyCode == 'R' || keyCode == 'h' || keyCode == 'H')
+        {
+            return;  // 已在 OnKeyPress 中处理，阻止父类 OnChar 的默认行为（如 e->Exit）
+        }
+        vtkInteractorStyleTrackballCamera::OnChar();
     }
 
 private:
     vtkRenderer* m_renderer = nullptr;
     vtkActorCollection* m_actors = nullptr;
+    vtkActorCollection* m_edgeActors = nullptr;  // 边界线框叠加层（替代 EdgeVisibility，避免 VTK 崩溃）
+    vtkSmartPointer<vtkActorCollection> m_actorsRef;  // 强引用，防止 actorCollection 被提前释放导致崩溃
+    vtkSmartPointer<vtkActorCollection> m_edgeActorsRef;
     vtkTextActor* m_helpText = nullptr;
     bool m_showHelp = false;
     int m_representationMode = 0; // 0=实体, 1=线框, 2=点
@@ -144,19 +201,22 @@ private:
         {
             vtkProperty* prop = actor->GetProperty();
             if (m_representationMode == 0)
-            {
                 prop->SetRepresentationToSurface();
-                std::cout << "显示模式: 实体" << std::endl;
-            }
             else if (m_representationMode == 1)
-            {
                 prop->SetRepresentationToWireframe();
-                std::cout << "显示模式: 线框" << std::endl;
-            }
             else if (m_representationMode == 2)
-            {
                 prop->SetRepresentationToPoints();
-                std::cout << "显示模式: 点" << std::endl;
+        }
+        const char* modeStr[] = {"实体", "线框", "点"};
+        std::cout << "显示模式: " << modeStr[m_representationMode] << std::endl;
+        // 线框/点模式下隐藏边界叠加层，实体模式下根据 m_showEdges 恢复
+        if (m_edgeActors)
+        {
+            m_edgeActors->InitTraversal();
+            vtkActor* ea = nullptr;
+            while ((ea = m_edgeActors->GetNextActor()) != nullptr)
+            {
+                ea->SetVisibility((m_representationMode == 0 && m_showEdges) ? 1 : 0);
             }
         }
         if (m_renderer && m_renderer->GetRenderWindow())
@@ -177,14 +237,18 @@ private:
         {
             vtkProperty* prop = actor->GetProperty();
             if (m_representationMode == 1)
-            {
                 prop->SetRepresentationToWireframe();
-                std::cout << "线框模式: 开启" << std::endl;
-            }
             else
-            {
                 prop->SetRepresentationToSurface();
-                std::cout << "线框模式: 关闭" << std::endl;
+        }
+        std::cout << "线框模式: " << (m_representationMode == 1 ? "开启" : "关闭") << std::endl;
+        if (m_edgeActors)
+        {
+            m_edgeActors->InitTraversal();
+            vtkActor* ea = nullptr;
+            while ((ea = m_edgeActors->GetNextActor()) != nullptr)
+            {
+                ea->SetVisibility((m_representationMode == 0 && m_showEdges) ? 1 : 0);
             }
         }
         if (m_renderer && m_renderer->GetRenderWindow())
@@ -197,21 +261,36 @@ private:
     {
         if (!m_actors) return;
         
+        // 根据第一个 actor 判断当前是否点模式，保持 S/W/P 状态一致
+        m_actors->InitTraversal();
+        vtkActor* firstActor = m_actors->GetNextActor();
+        bool inPointsMode = (firstActor && firstActor->GetProperty()->GetRepresentation() == VTK_POINTS);
+        bool switchToPoints = !inPointsMode;
+        m_representationMode = switchToPoints ? 2 : 0;
+        
         m_actors->InitTraversal();
         vtkActor* actor = nullptr;
         while ((actor = m_actors->GetNextActor()) != nullptr)
         {
             vtkProperty* prop = actor->GetProperty();
-            if (prop->GetRepresentation() == VTK_POINTS)
-            {
-                prop->SetRepresentationToSurface();
-                std::cout << "点模式: 关闭" << std::endl;
-            }
-            else
+            if (switchToPoints)
             {
                 prop->SetRepresentationToPoints();
                 prop->SetPointSize(5);
-                std::cout << "点模式: 开启" << std::endl;
+            }
+            else
+            {
+                prop->SetRepresentationToSurface();
+            }
+        }
+        std::cout << "点模式: " << (switchToPoints ? "开启" : "关闭") << std::endl;
+        if (m_edgeActors)
+        {
+            m_edgeActors->InitTraversal();
+            vtkActor* ea = nullptr;
+            while ((ea = m_edgeActors->GetNextActor()) != nullptr)
+            {
+                ea->SetVisibility((!switchToPoints && m_showEdges) ? 1 : 0);
             }
         }
         if (m_renderer && m_renderer->GetRenderWindow())
@@ -222,30 +301,25 @@ private:
 
     void ToggleEdges()
     {
-        if (!m_actors) return;
+        // 使用线框叠加层替代 EdgeVisibility，避免 VTK EdgeVisibility 导致崩溃
+        if (!m_edgeActors || !m_renderer) return;
+        
+        vtkRenderWindow* renderWindow = m_renderer->GetRenderWindow();
+        if (!renderWindow) return;
         
         m_showEdges = !m_showEdges;
         
-        m_actors->InitTraversal();
+        m_edgeActors->InitTraversal();
         vtkActor* actor = nullptr;
-        while ((actor = m_actors->GetNextActor()) != nullptr)
+        while ((actor = m_edgeActors->GetNextActor()) != nullptr)
         {
-            vtkProperty* prop = actor->GetProperty();
-            if (m_showEdges)
+            if (actor)
             {
-                prop->EdgeVisibilityOn();
-                std::cout << "边界显示: 开启" << std::endl;
-            }
-            else
-            {
-                prop->EdgeVisibilityOff();
-                std::cout << "边界显示: 关闭" << std::endl;
+                actor->SetVisibility(m_showEdges ? 1 : 0);
             }
         }
-        if (m_renderer && m_renderer->GetRenderWindow())
-        {
-            m_renderer->GetRenderWindow()->Render();
-        }
+        std::cout << "边界显示: " << (m_showEdges ? "开启" : "关闭") << std::endl;
+        renderWindow->Render();
     }
 
     void ToggleTransparency()
@@ -259,17 +333,9 @@ private:
         while ((actor = m_actors->GetNextActor()) != nullptr)
         {
             vtkProperty* prop = actor->GetProperty();
-            if (m_transparent)
-            {
-                prop->SetOpacity(0.5);
-                std::cout << "透明度: 50%" << std::endl;
-            }
-            else
-            {
-                prop->SetOpacity(1.0);
-                std::cout << "透明度: 100%" << std::endl;
-            }
+            prop->SetOpacity(m_transparent ? 0.5 : 1.0);
         }
+        std::cout << "透明度: " << (m_transparent ? "50%" : "100%") << std::endl;
         if (m_renderer && m_renderer->GetRenderWindow())
         {
             m_renderer->GetRenderWindow()->Render();
@@ -305,14 +371,13 @@ private:
             {
                 prop->SetColor(colors[colorIndex % numColors]);
                 colorIndex++;
-                std::cout << "按组着色: 开启" << std::endl;
             }
             else
             {
                 prop->SetColor(0.7, 0.7, 0.7); // 恢复默认灰色
-                std::cout << "按组着色: 关闭" << std::endl;
             }
         }
+        std::cout << "按组着色: " << (m_colorByGroup ? "开启" : "关闭") << std::endl;
         if (m_renderer && m_renderer->GetRenderWindow())
         {
             m_renderer->GetRenderWindow()->Render();
@@ -344,17 +409,18 @@ private:
             {
                 m_helpText = vtkTextActor::New();
                 m_helpText->SetInput(
-                    "网格可视化快捷键:\n"
-                    "S - 切换显示模式(实体/线框/点)\n"
-                    "W - 切换线框模式\n"
-                    "P - 切换点模式\n"
-                    "E - 切换边界显示\n"
-                    "T - 切换透明度\n"
-                    "C - 切换按组着色\n"
-                    "R - 重置视图\n"
-                    "H - 显示/隐藏帮助\n"
-                    "\n鼠标操作:\n"
-                    "左键拖拽 - 旋转\n"
+                    "=== 网格可视化快捷键 ===\n"
+                    "Alt+S - 循环切换显示模式：实体表面 / 线框 / 顶点\n"
+                    "Alt+W - 切换线框模式（仅线框与实体之间切换）\n"
+                    "Alt+P - 切换点模式（仅顶点与实体之间切换）\n"
+                    "Alt+E - 切换网格边线显示（实体模式下显示/隐藏边界线）\n"
+                    "Alt+T - 切换半透明显示（50%透明度）\n"
+                    "Alt+C - 切换按组着色（多组时用不同颜色区分）\n"
+                    "Alt+R - 重置相机到默认视角\n"
+                    "Alt+H - 显示/隐藏本帮助\n"
+                    "Q - 退出程序\n"
+                    "\n--- 鼠标操作 ---\n"
+                    "左键拖拽 - 旋转视角\n"
                     "右键拖拽 - 缩放\n"
                     "中键拖拽 - 平移"
                 );
@@ -490,12 +556,33 @@ vtkSmartPointer<vtkActor> buildVTKGroup(PREPRO_BASE_NAMESPACE::PFGroup* currentG
         demoActor->GetProperty()->SetRepresentationToWireframe();
     }
 
-    if (type == VisualizationType::EMesh)
-    {
-        demoActor->GetProperty()->EdgeVisibilityOn();
-        demoActor->GetProperty()->SetEdgeColor(0, 0, 0); // set edge color to black
-    }
+    // 不再使用 EdgeVisibility（会导致 VTK 崩溃），改用线框叠加层
     return demoActor;
+}
+
+// 从表面 actor 创建边界线框叠加层（仅对三角形/四边形/多边形有效）
+// 使用 DeepCopy 避免与表面 actor 共享 polyData，防止 VTK 渲染时崩溃
+static vtkSmartPointer<vtkActor> createEdgeOverlayActor(vtkActor* sourceActor)
+{
+    if (!sourceActor) return nullptr;
+    vtkPolyDataMapper* mapper = vtkPolyDataMapper::SafeDownCast(sourceActor->GetMapper());
+    if (!mapper) return nullptr;
+    vtkPolyData* srcPolyData = mapper->GetInput();
+    if (!srcPolyData || srcPolyData->GetNumberOfCells() == 0) return nullptr;
+    
+    vtkSmartPointer<vtkPolyData> edgePolyData = vtkSmartPointer<vtkPolyData>::New();
+    edgePolyData->DeepCopy(srcPolyData);
+    
+    vtkSmartPointer<vtkPolyDataMapper> edgeMapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+    edgeMapper->SetInputData(edgePolyData);
+    
+    vtkSmartPointer<vtkActor> edgeActor = vtkSmartPointer<vtkActor>::New();
+    edgeActor->SetMapper(edgeMapper);
+    edgeActor->GetProperty()->SetRepresentationToWireframe();
+    edgeActor->GetProperty()->SetColor(0.0, 0.0, 0.0);
+    edgeActor->GetProperty()->SetLineWidth(1.0);
+    edgeActor->SetVisibility(1);  // 默认显示边界
+    return edgeActor;
 }
 void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, VisualizationType type, std::vector<PREPRO_BASE_NAMESPACE::PFGroup*> groupList)
 {
@@ -514,6 +601,22 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
 
     // 收集所有actors，用于网格可视化控制
     vtkSmartPointer<vtkActorCollection> actorCollection = vtkSmartPointer<vtkActorCollection>::New();
+    vtkSmartPointer<vtkActorCollection> edgeActorCollection = vtkSmartPointer<vtkActorCollection>::New();
+
+    auto addActorWithEdgeOverlay = [&](vtkActor* groupActor) {
+        if (!groupActor) return;
+        demoRender->AddActor(groupActor);
+        actorCollection->AddItem(groupActor);
+        if (type == VisualizationType::EMesh)
+        {
+            vtkSmartPointer<vtkActor> edgeActor = createEdgeOverlayActor(groupActor);
+            if (edgeActor)
+            {
+                demoRender->AddActor(edgeActor);
+                edgeActorCollection->AddItem(edgeActor);
+            }
+        }
+    };
 
     // single groups
     std::string checkName;
@@ -526,11 +629,7 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
         checkName = currentGroup->getName();
 
         vtkSmartPointer<vtkActor> groupActor = buildVTKGroup(currentGroup, type);
-        if (groupActor)
-        {
-            demoRender->AddActor(groupActor);
-            actorCollection->AddItem(groupActor);
-        }
+        addActorWithEdgeOverlay(groupActor);
     }
 
     // volumes
@@ -547,11 +646,7 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
             currentGroup = volumeGroups[j];
             checkName = currentGroup->getName();
             vtkSmartPointer<vtkActor> groupActor = buildVTKGroup(currentGroup, type);
-            if (groupActor)
-            {
-                demoRender->AddActor(groupActor);
-                actorCollection->AddItem(groupActor);
-            }
+            addActorWithEdgeOverlay(groupActor);
         }
     }
 
@@ -561,11 +656,7 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
         checkName = currentGroup->getName();
 
         vtkSmartPointer<vtkActor> groupActor = buildVTKGroup(currentGroup, type);
-        if (groupActor)
-        {
-            demoRender->AddActor(groupActor);
-            actorCollection->AddItem(groupActor);
-        }
+        addActorWithEdgeOverlay(groupActor);
     }
 
     vtkSmartPointer<vtkRenderWindow> demoWindow = vtkSmartPointer<vtkRenderWindow>::New();
@@ -575,7 +666,7 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
     // 设置窗口标题
     if (type == VisualizationType::EMesh)
     {
-        demoWindow->SetWindowName("网格可视化 - 按H键查看帮助");
+        demoWindow->SetWindowName("网格可视化 - 按Alt+H查看帮助");
     }
     else if (type == VisualizationType::EGeomerty)
     {
@@ -595,19 +686,20 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
         vtkSmartPointer<MeshInteractorStyle> meshStyle = vtkSmartPointer<MeshInteractorStyle>::New();
         meshStyle->SetRenderer(demoRender);
         meshStyle->SetActors(actorCollection);
+        meshStyle->SetEdgeActors(edgeActorCollection);
         demoInteractor->SetInteractorStyle(meshStyle);
         
         // 输出帮助信息到控制台
         std::cout << "\n=== 网格可视化控制 ===" << std::endl;
         std::cout << "快捷键:" << std::endl;
-        std::cout << "  S - 切换显示模式(实体/线框/点)" << std::endl;
-        std::cout << "  W - 切换线框模式" << std::endl;
-        std::cout << "  P - 切换点模式" << std::endl;
-        std::cout << "  E - 切换边界显示" << std::endl;
-        std::cout << "  T - 切换透明度" << std::endl;
-        std::cout << "  C - 切换按组着色" << std::endl;
-        std::cout << "  R - 重置视图" << std::endl;
-        std::cout << "  H - 显示/隐藏帮助" << std::endl;
+        std::cout << "  Alt+S - 切换显示模式(实体/线框/点)" << std::endl;
+        std::cout << "  Alt+W - 切换线框模式" << std::endl;
+        std::cout << "  Alt+P - 切换点模式" << std::endl;
+        std::cout << "  Alt+E - 切换边界显示" << std::endl;
+        std::cout << "  Alt+T - 切换透明度" << std::endl;
+        std::cout << "  Alt+C - 切换按组着色" << std::endl;
+        std::cout << "  Alt+R - 重置视图" << std::endl;
+        std::cout << "  Alt+H - 显示/隐藏帮助" << std::endl;
         std::cout << "====================\n" << std::endl;
     }
     else
@@ -618,9 +710,23 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
 
     demoInteractor->Initialize();
     
-    // 保存渲染会话状态（供Socket服务器使用）
-    SetRenderSession(demoWindow, demoRender, actorCollection, demoInteractor);
+    // 注册窗口关闭事件回调（仅在网格类型时）
+    if (type == VisualizationType::EMesh)
+    {
+        vtkSmartPointer<vtkCallbackCommand> closeCallback = vtkSmartPointer<vtkCallbackCommand>::New();
+        closeCallback->SetCallback(OnWindowClose);
+        demoWindow->AddObserver(vtkCommand::ExitEvent, closeCallback);
+    }
     
+    // 先渲染一次，确保窗口已创建并显示（在主线程中完成，确保OpenGL上下文正确初始化）
+    demoWindow->Render();
+    
+    // 保存渲染会话状态（供Socket服务器使用）
+    // 注意：此时窗口已渲染，可以安全地获取窗口句柄并启动服务器
+    SetRenderSession(demoWindow, demoRender, actorCollection, demoInteractor, edgeActorCollection);
+    
+    // 在主线程中启动交互循环（阻塞调用，直到窗口关闭）
+    // 这样确保OpenGL上下文和窗口消息循环都在主线程中正确运行
     demoInteractor->Start();
 }
 
@@ -661,9 +767,23 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFGroup& pfGroup, Visual
 
     demoInteractor->Initialize();
     
+    // 注册窗口关闭事件回调（仅在网格类型时）
+    if (type == VisualizationType::EMesh)
+    {
+        vtkSmartPointer<vtkCallbackCommand> closeCallback = vtkSmartPointer<vtkCallbackCommand>::New();
+        closeCallback->SetCallback(OnWindowClose);
+        demoWindow->AddObserver(vtkCommand::ExitEvent, closeCallback);
+    }
+    
+    // 先渲染一次，确保窗口已创建并显示（在主线程中完成，确保OpenGL上下文正确初始化）
+    demoWindow->Render();
+    
     // 保存渲染会话状态（供Socket服务器使用）
+    // 注意：此时窗口已渲染，可以安全地获取窗口句柄并启动服务器
     SetRenderSession(demoWindow, demoRender, actorCollection, demoInteractor);
     
+    // 在主线程中启动交互循环（阻塞调用，直到窗口关闭）
+    // 这样确保OpenGL上下文和窗口消息循环都在主线程中正确运行
     demoInteractor->Start();
 }
 
@@ -688,6 +808,22 @@ HWND RenderProcessor::showAndGetWindowHandle(const PREPRO_BASE_NAMESPACE::PFData
 
     // 收集所有actors，用于网格可视化控制
     vtkSmartPointer<vtkActorCollection> actorCollection = vtkSmartPointer<vtkActorCollection>::New();
+    vtkSmartPointer<vtkActorCollection> edgeActorCollection = vtkSmartPointer<vtkActorCollection>::New();
+
+    auto addActorWithEdgeOverlay = [&](vtkActor* groupActor) {
+        if (!groupActor) return;
+        demoRender->AddActor(groupActor);
+        actorCollection->AddItem(groupActor);
+        if (type == VisualizationType::EMesh)
+        {
+            vtkSmartPointer<vtkActor> edgeActor = createEdgeOverlayActor(groupActor);
+            if (edgeActor)
+            {
+                demoRender->AddActor(edgeActor);
+                edgeActorCollection->AddItem(edgeActor);
+            }
+        }
+    };
 
     // single groups
     std::string checkName;
@@ -700,11 +836,7 @@ HWND RenderProcessor::showAndGetWindowHandle(const PREPRO_BASE_NAMESPACE::PFData
         checkName = currentGroup->getName();
 
         vtkSmartPointer<vtkActor> groupActor = buildVTKGroup(currentGroup, type);
-        if (groupActor)
-        {
-            demoRender->AddActor(groupActor);
-            actorCollection->AddItem(groupActor);
-        }
+        addActorWithEdgeOverlay(groupActor);
     }
 
     // volumes
@@ -721,11 +853,7 @@ HWND RenderProcessor::showAndGetWindowHandle(const PREPRO_BASE_NAMESPACE::PFData
             currentGroup = volumeGroups[j];
             checkName = currentGroup->getName();
             vtkSmartPointer<vtkActor> groupActor = buildVTKGroup(currentGroup, type);
-            if (groupActor)
-            {
-                demoRender->AddActor(groupActor);
-                actorCollection->AddItem(groupActor);
-            }
+            addActorWithEdgeOverlay(groupActor);
         }
     }
 
@@ -735,11 +863,7 @@ HWND RenderProcessor::showAndGetWindowHandle(const PREPRO_BASE_NAMESPACE::PFData
         checkName = currentGroup->getName();
 
         vtkSmartPointer<vtkActor> groupActor = buildVTKGroup(currentGroup, type);
-        if (groupActor)
-        {
-            demoRender->AddActor(groupActor);
-            actorCollection->AddItem(groupActor);
-        }
+        addActorWithEdgeOverlay(groupActor);
     }
 
     vtkSmartPointer<vtkRenderWindow> demoWindow = vtkSmartPointer<vtkRenderWindow>::New();
@@ -749,7 +873,7 @@ HWND RenderProcessor::showAndGetWindowHandle(const PREPRO_BASE_NAMESPACE::PFData
     // 设置窗口标题
     if (type == VisualizationType::EMesh)
     {
-        demoWindow->SetWindowName("网格可视化 - 按H键查看帮助");
+        demoWindow->SetWindowName("网格可视化 - 按Alt+H查看帮助");
     }
     else if (type == VisualizationType::EGeomerty)
     {
@@ -777,6 +901,7 @@ HWND RenderProcessor::showAndGetWindowHandle(const PREPRO_BASE_NAMESPACE::PFData
         vtkSmartPointer<MeshInteractorStyle> meshStyle = vtkSmartPointer<MeshInteractorStyle>::New();
         meshStyle->SetRenderer(demoRender);
         meshStyle->SetActors(actorCollection);
+        meshStyle->SetEdgeActors(edgeActorCollection);
         demoInteractor->SetInteractorStyle(meshStyle);
     }
     else
@@ -790,6 +915,9 @@ HWND RenderProcessor::showAndGetWindowHandle(const PREPRO_BASE_NAMESPACE::PFData
     
     // 渲染一次以确保窗口已创建
     demoWindow->Render();
+
+    // 保存渲染会话（供 Socket 服务器使用，支持 E 键边界切换等）
+    SetRenderSession(demoWindow, demoRender, actorCollection, demoInteractor, edgeActorCollection);
 
     // 获取窗口句柄
     HWND windowHandle = reinterpret_cast<HWND>(demoWindow->GetGenericWindowId());
@@ -1018,9 +1146,14 @@ void RenderProcessor::showResult(const PREPRO_BASE_NAMESPACE::PFData& shownData,
     demoInteractor->SetInteractorStyle(demoStyle);
     demoInteractor->Initialize();
     
+    // 先渲染一次，确保窗口已创建并显示
+    demoWindow->Render();
+    
     // 保存渲染会话状态（供Socket服务器使用）
+    // 注意：此时窗口已渲染，可以安全地获取窗口句柄并启动服务器
     SetRenderSession(demoWindow, demoRender, actorCollection, demoInteractor);
     
+    // 在主线程中启动交互循环（阻塞调用，直到窗口关闭）
     demoInteractor->Start();
 }
 
@@ -1181,8 +1314,22 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
 
     demoInteractor->Initialize();
     
+    // 注册窗口关闭事件回调（仅在网格类型时）
+    if (type == VisualizationType::EMesh)
+    {
+        vtkSmartPointer<vtkCallbackCommand> closeCallback = vtkSmartPointer<vtkCallbackCommand>::New();
+        closeCallback->SetCallback(OnWindowClose);
+        demoWindow->AddObserver(vtkCommand::ExitEvent, closeCallback);
+    }
+    
+    // 先渲染一次，确保窗口已创建并显示（在主线程中完成，确保OpenGL上下文正确初始化）
+    demoWindow->Render();
+    
     // 保存渲染会话状态（供Socket服务器使用）
+    // 注意：此时窗口已渲染，可以安全地获取窗口句柄并启动服务器
     SetRenderSession(demoWindow, demoRender, actorCollection, demoInteractor);
     
+    // 在主线程中启动交互循环（阻塞调用，直到窗口关闭）
+    // 这样确保OpenGL上下文和窗口消息循环都在主线程中正确运行
     demoInteractor->Start();
 }

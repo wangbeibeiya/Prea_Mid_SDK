@@ -1,4 +1,5 @@
 ﻿#include "ModelProcessor.h"
+#include "MeshVisualizationServer.h"
 #include "../include/ProjectModelData.h"
 #include "../include/Logger.h"
 #include <iostream>
@@ -10,49 +11,110 @@
 #include <json.hpp>
 using json = nlohmann::json;
 
+// 前向声明：设置全局服务器实例指针
+extern "C" {
+    void SetServerInstance(MeshVisualizationServer*);
+    MeshVisualizationServer* GetServerInstance();
+}
+
 int main(int argc, char* argv[]) {
     // 设置控制台编码为UTF-8
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
     
-    std::cout << "=== Pera CFD SDK 模型导入演示程序 ===" << std::endl;
+    std::cout << "=== Pera CFD SDK 模型处理程序 ===" << std::endl;
     
-    // 获取文件路径
+    // 解析命令行参数
+    enum class Mode { None, Json, PPCF };
+    Mode mode = Mode::None;
     std::string filePath;
-    if (argc > 1) {
-        // 从命令行参数获取
-        filePath = argv[1];
-    } else {
-        // 使用默认路径
-        //filePath = "F:\\PeraSimTestPro\\f98\\T1230/T1230.json";
-        filePath = "F:\\PeraSimTestPro\\f98\\T1230/T1230.ppcf";
-        std::cout << "\n未指定文件路径，使用默认路径: " << filePath << std::endl;
-        std::cout << "提示: 您也可以通过命令行参数指定文件路径（支持JSON和PPCF格式）" << std::endl;
+    std::string outputPath;
+    
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--json") {
+            mode = Mode::Json;
+            // 下一个参数应该是文件路径
+            if (i + 1 < argc) {
+                filePath = argv[++i];
+            } else {
+                std::cerr << "错误: --json 需要指定文件路径" << std::endl;
+                return 1;
+            }
+        } else if (arg == "--ppcf") {
+            mode = Mode::PPCF;
+            // 下一个参数应该是文件路径
+            if (i + 1 < argc) {
+                filePath = argv[++i];
+            } else {
+                std::cerr << "错误: --ppcf 需要指定文件路径" << std::endl;
+                return 1;
+            }
+        } else if (arg == "--help" || arg == "-h") {
+            std::cout << "\n用法: MappingGeometry.exe [选项]\n" << std::endl;
+            std::cout << "选项:" << std::endl;
+            std::cout << "  --json <路径>     执行几何匹配和网格划分（不渲染，不启动Socket）" << std::endl;
+            std::cout << "  --ppcf <路径>     执行网格渲染和Socket启动（不进行几何匹配和网格划分）" << std::endl;
+            std::cout << "  --help, -h        显示此帮助信息\n" << std::endl;
+            std::cout << "示例:" << std::endl;
+            std::cout << "  MappingGeometry.exe --json model.json" << std::endl;
+            std::cout << "  MappingGeometry.exe --ppcf model.ppcf" << std::endl;
+            return 0;
+        } else if (arg[0] != '-') {
+            // 如果没有指定模式，可能是旧格式的参数
+            if (mode == Mode::None) {
+                std::cerr << "错误: 请使用 --json 或 --ppcf 指定处理模式" << std::endl;
+                std::cerr << "使用 --help 查看帮助信息" << std::endl;
+                return 1;
+            }
+        }
     }
     
-    // 检查文件扩展名，判断是否为PPCF文件
-    std::filesystem::path pathObj(filePath);
-    std::string extension = pathObj.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+    // 检查是否指定了模式
+    if (mode == Mode::None) {
+        std::cerr << "错误: 请使用 --json 或 --ppcf 指定处理模式" << std::endl;
+        std::cerr << "使用 --help 查看帮助信息" << std::endl;
+        return 1;
+    }
     
-    // 如果是PPCF文件，直接导入并渲染网格，跳过几何匹配和网格划分
-    if (extension == ".ppcf") {
-        std::cout << "\n检测到PPCF文件，直接导入并渲染网格..." << std::endl;
+    // 根据模式执行不同的处理流程
+    if (mode == Mode::PPCF) {
+        // PPCF模式：只执行网格渲染和Socket启动
+        std::cout << "\n=== PPCF模式：网格渲染和Socket启动 ===" << std::endl;
         std::cout << "文件路径: " << filePath << std::endl;
         
         try {
-            // 创建模型处理器
+            // 在程序启动时立即启动Socket服务器（使用静态变量保持存活）
+            std::cout << "\n正在启动Socket服务器..." << std::endl;
+            static MeshVisualizationServer socketServer(54321);  // 静态变量，在程序结束前不会销毁
+            if (!socketServer.start()) {
+                std::cerr << "警告: Socket服务器启动失败，但将继续执行..." << std::endl;
+            } else {
+                std::cout << "Socket服务器已启动，端口: 54321" << std::endl;
+            }
+            
+            // 创建模型处理器（Socket服务器已在外部启动）
+            // 注意：ModelProcessor构造函数会创建新的服务器实例并覆盖全局实例指针
+            // 但因为我们传入initialize(false)，它不会启动服务器
             ModelProcessor processor;
             
-            // 初始化SDK
-            if (!processor.initialize()) {
+            // ModelProcessor创建后，全局实例指针被覆盖为processor中的未启动服务器
+            // 我们需要重新设置全局实例指针指向已启动的socketServer
+            SetServerInstance(&socketServer);
+            std::cout << "已设置全局服务器实例指针指向已启动的Socket服务器" << std::endl;
+            
+            // 初始化SDK（不启动Socket服务器，因为已经在外部启动）
+            if (!processor.initialize(false)) {  // false表示不启动Socket服务器
                 std::cerr << "SDK初始化失败！" << std::endl;
                 return 1;
             }
             
-            // 直接导入PPCF文件并渲染网格
-            if (processor.processMeshModel(filePath, true)) {
+            // 导入PPCF文件并渲染网格
+            // 注意：processMeshModel会调用RenderProcessor::show，这会阻塞在主线程直到窗口关闭
+            if (processor.processMeshModel(filePath, true)) {  // true表示启用渲染
                 std::cout << "\nPPCF文件导入并渲染成功！" << std::endl;
+                std::cout << "Socket服务器运行中，端口: 54321" << std::endl;
+                std::cout << "渲染窗口已关闭，程序退出" << std::endl;
                 return 0;
             } else {
                 std::cerr << "\nPPCF文件导入失败！" << std::endl;
@@ -63,10 +125,10 @@ int main(int argc, char* argv[]) {
             std::cerr << "\n导入PPCF文件时发生错误: " << e.what() << std::endl;
             return 1;
         }
-    }
-    
-    // 如果不是PPCF文件，按原来的流程处理（JSON文件 -> 几何导入 -> 网格生成）
-    std::string jsonFilePath = filePath;
+    } else if (mode == Mode::Json) {
+        // JSON模式：只执行几何匹配和网格划分
+        std::cout << "\n=== JSON模式：几何匹配和网格划分 ===" << std::endl;
+        std::string jsonFilePath = filePath;
     std::cout << "\n从 JSON 文件加载数据: " << jsonFilePath << std::endl;
     
     // 创建Logger实例用于记录JSON加载错误
@@ -238,11 +300,11 @@ int main(int argc, char* argv[]) {
             std::cout << "  (从 WorkingDirectory + ProjectName + ProjectName.stp 构建)" << std::endl;
             
             try {
-                // 创建模型导入器
+                // 创建模型导入器（不启动Socket服务器）
                 ModelProcessor processor;
                 
-                // 初始化SDK
-                if (!processor.initialize()) {
+                // 初始化SDK（不启动Socket服务器）
+                if (!processor.initialize(false)) {  // false表示不启动Socket服务器
                     std::cerr << "SDK初始化失败！" << std::endl;
                     return 1;
                 }
@@ -251,7 +313,7 @@ int main(int argc, char* argv[]) {
                 ModelProcessor::ProcessOptions options;
                 options.enableQuickRepair = true;
                 options.enableFindVolumes = true;
-                options.enableRendering = true;  // 默认渲染网格（如果已生成）
+                options.enableRendering = false;  // JSON模式不渲染
                 
                 // 使用第一次导入模式（值为1）
                 int importMode = 1;
@@ -279,8 +341,7 @@ int main(int argc, char* argv[]) {
         }
         
         // 如果指定了输出文件，保存处理后的数据
-        if (argc > 2) {
-            std::string outputPath = argv[2];
+        if (!outputPath.empty()) {
             if (model.saveToJsonFile(outputPath)) {
                 std::cout << "\n数据已保存到: " << outputPath << std::endl;
             } else {
@@ -326,4 +387,5 @@ int main(int argc, char* argv[]) {
         
         return 1;
     }
+} 
 } 

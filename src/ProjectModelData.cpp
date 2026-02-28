@@ -29,6 +29,30 @@ void FluidMeshInfo::fromJson(const json& j)
     if (j.contains("NormalAngle")) NormalAngle = j["NormalAngle"].get<double>();
 }
 
+// ============= LocalFluidMeshItem 实现 =============
+
+json LocalFluidMeshItem::toJson() const
+{
+    json j;
+    if (Name.has_value()) j["Name"] = Name.value();
+    if (RefinementSet.has_value()) j["RefinementSet"] = RefinementSet.value();
+    if (MinMeshSize.has_value()) j["MinMeshSize"] = MinMeshSize.value();
+    if (MaxMeshSize.has_value()) j["MaxMeshSize"] = MaxMeshSize.value();
+    if (GrowthRate.has_value()) j["GrowthRate"] = GrowthRate.value();
+    if (NormalAngle.has_value()) j["NormalAngle"] = NormalAngle.value();
+    return j;
+}
+
+void LocalFluidMeshItem::fromJson(const json& j)
+{
+    if (j.contains("Name") && !j["Name"].is_null()) Name = j["Name"].get<std::string>();
+    if (j.contains("RefinementSet") && !j["RefinementSet"].is_null()) RefinementSet = j["RefinementSet"].get<std::string>();
+    if (j.contains("MinMeshSize")) MinMeshSize = j["MinMeshSize"].get<double>();
+    if (j.contains("MaxMeshSize")) MaxMeshSize = j["MaxMeshSize"].get<double>();
+    if (j.contains("GrowthRate")) GrowthRate = j["GrowthRate"].get<double>();
+    if (j.contains("NormalAngle")) NormalAngle = j["NormalAngle"].get<double>();
+}
+
 // ============= SolidItem 实现 =============
 
 json SolidItem::toJson() const
@@ -364,6 +388,8 @@ ProjectModelData::ProjectModelData(const ProjectModelData& other)
     ProjectName = other.ProjectName;
     GeometryPath = other.GeometryPath;
     OriginalGeometryPath = other.OriginalGeometryPath;
+    FluidMeshInfo = other.FluidMeshInfo;
+    LocalFluidMeshsInfo = other.LocalFluidMeshsInfo;
     ModelTree = other.ModelTree;
     SetList = other.SetList;
     AllSolidList = other.AllSolidList;
@@ -380,6 +406,8 @@ ProjectModelData& ProjectModelData::operator=(const ProjectModelData& other)
         ProjectName = other.ProjectName;
         GeometryPath = other.GeometryPath;
         OriginalGeometryPath = other.OriginalGeometryPath;
+        FluidMeshInfo = other.FluidMeshInfo;
+        LocalFluidMeshsInfo = other.LocalFluidMeshsInfo;
         ModelTree = other.ModelTree;
         SetList = other.SetList;
         AllSolidList = other.AllSolidList;
@@ -431,6 +459,17 @@ json ProjectModelData::toJson() const
     
     // FluidMeshInfo
     j["FluidMeshInfo"] = FluidMeshInfo.toJson();
+    
+    // LocalFluidMeshsInfo
+    if (!LocalFluidMeshsInfo.empty())
+    {
+        json localArray = json::array();
+        for (const auto& item : LocalFluidMeshsInfo)
+        {
+            localArray.push_back(item.toJson());
+        }
+        j["LocalFluidMeshsInfo"] = {{"LocalFluidMeshsInfo", localArray}};
+    }
     
     return j;
 }
@@ -533,6 +572,22 @@ void ProjectModelData::fromJson(const json& j)
     // FluidMeshInfo
     if (j.contains("FluidMeshInfo") && j["FluidMeshInfo"].is_object()) {
         FluidMeshInfo.fromJson(j["FluidMeshInfo"]);
+    }
+    
+    // LocalFluidMeshsInfo（支持 LocalFluidMeshsInfo.LocalFluidMeshsInfo 嵌套结构）
+    LocalFluidMeshsInfo.clear();
+    if (j.contains("LocalFluidMeshsInfo") && j["LocalFluidMeshsInfo"].is_object())
+    {
+        const auto& lfmInfo = j["LocalFluidMeshsInfo"];
+        if (lfmInfo.contains("LocalFluidMeshsInfo") && lfmInfo["LocalFluidMeshsInfo"].is_array())
+        {
+            for (const auto& itemJson : lfmInfo["LocalFluidMeshsInfo"])
+            {
+                LocalFluidMeshItem item;
+                item.fromJson(itemJson);
+                LocalFluidMeshsInfo.push_back(item);
+            }
+        }
     }
     
     // 清理现有数据
@@ -645,6 +700,8 @@ void ProjectModelData::reset()
     ProjectName.reset();
     GeometryPath.reset();
     OriginalGeometryPath.reset();
+    FluidMeshInfo = {};
+    LocalFluidMeshsInfo.clear();
     ModelTree.clear();
     SetList.clear();
     AllSolidList.clear();

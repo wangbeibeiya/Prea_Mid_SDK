@@ -26,6 +26,10 @@
 #include <json.hpp>
 using json = nlohmann::json;
 
+extern "C" {
+    MeshVisualizationServer* GetServerInstance();
+}
+
 ModelProcessor::ModelProcessor(const std::string& examplePath)
 	: m_geometryAPI(std::make_unique<GeometryAPI>(examplePath))
 	, m_processedGeometryCount(0)
@@ -51,9 +55,12 @@ ModelProcessor::ModelProcessor(const std::string& examplePath)
 ModelProcessor::~ModelProcessor()
 {
 	m_logger.closeLogFile();
+	// 注意：不在这里停止 Socket 服务器
+	// Socket 服务器会在渲染窗口关闭时自动停止（通过窗口关闭事件回调）
+	// 如果主程序退出时窗口仍然存在，服务器会继续运行
 }
 
-bool ModelProcessor::initialize()
+bool ModelProcessor::initialize(bool enableSocketServer)
 {
 	printProgress("正在初始化模型处理器...");
 
@@ -76,6 +83,26 @@ bool ModelProcessor::initialize()
 		{
 			printProgress("警告: 网格处理器初始化失败: " + m_meshProcessor->getLastError());
 		}
+	}
+
+	// 启动网格可视化服务器（仅在需要时启动）
+	if (enableSocketServer)
+	{
+		if (m_visualizationServer && !m_visualizationServer->isRunning())
+		{
+			if (m_visualizationServer->start())
+			{
+				printProgress("网格可视化服务器已启动，端口: 54321");
+			}
+			else
+			{
+				printProgress("警告: 网格可视化服务器启动失败");
+			}
+		}
+	}
+	else
+	{
+		printProgress("Socket服务器已禁用（JSON模式）");
 	}
 
 	printProgress("模型处理器初始化成功");
@@ -203,6 +230,11 @@ bool ModelProcessor::processGeometryModel(const std::string& filePath,
 					// 从JSON加载边界层参数（如果存在）
 					// 由于ProjectModelData的toJson()不包含BoundaryLayersInfo，我们需要从原始JSON读取
 					// 方法：通过modelData的WorkingDirectory和ProjectName构建JSON文件路径
+					std::vector<LocalFluidMeshItem> localMeshItems;
+					if (modelData && !modelData->getLocalFluidMeshsInfo().empty())
+					{
+						localMeshItems = modelData->getLocalFluidMeshsInfo();
+					}
 					try {
 						std::string workingDir = modelData->getWorkingDirectory();
 						std::string projectName = modelData->getProjectName();
@@ -314,6 +346,22 @@ bool ModelProcessor::processGeometryModel(const std::string& filePath,
 											}
 										}
 									}
+									
+									// 若 modelData 中无 LocalFluidMeshsInfo，则从 JSON 解析
+									if (localMeshItems.empty() &&
+										originalJson.contains("LocalFluidMeshsInfo") && originalJson["LocalFluidMeshsInfo"].is_object())
+									{
+										const auto& lfmInfo = originalJson["LocalFluidMeshsInfo"];
+										if (lfmInfo.contains("LocalFluidMeshsInfo") && lfmInfo["LocalFluidMeshsInfo"].is_array())
+										{
+											for (const auto& itemJson : lfmInfo["LocalFluidMeshsInfo"])
+											{
+												LocalFluidMeshItem lfmItem;
+												lfmItem.fromJson(itemJson);
+												localMeshItems.push_back(lfmItem);
+											}
+										}
+									}
 								}
 							}
 						}
@@ -334,6 +382,19 @@ bool ModelProcessor::processGeometryModel(const std::string& filePath,
 					else
 					{
 						printProgress("警告: 设置网格参数失败: " + m_meshProcessor->getLastError());
+					}
+					
+					// 设置局部网格参数（从 LocalFluidMeshsInfo 读取，需在生成网格前设置）
+					if (!localMeshItems.empty() && modelData)
+					{
+						if (m_meshProcessor->setLocalMeshParameters(localMeshItems, modelData))
+						{
+							printProgress("已设置局部网格参数，共 " + std::to_string(localMeshItems.size()) + " 项");
+						}
+						else
+						{
+							printProgress("警告: 设置局部网格参数失败: " + m_meshProcessor->getLastError());
+						}
 					}
 				}
 
@@ -924,38 +985,22 @@ bool ModelProcessor::executeRendering(const std::string& visualizationType)
 		}
 		
 		// 执行渲染
-		RenderProcessor::show(data, vizType);
-		
-		// 渲染成功后，启动可视化服务器（如果还未启动）
-		// 此时窗口已经显示，渲染会话已经通过SetRenderSession设置
-		if (m_visualizationServer && vizType == VisualizationType::EMesh)
+		// 注意：服务器已在程序启动时启动，SetRenderSession 会设置窗口句柄
+		// 在 show() 阻塞前检查服务器状态（show 返回时窗口已关闭、服务器已停止）
+		if (vizType == VisualizationType::EMesh)
 		{
-			// 检查窗口句柄是否已设置（确保渲染成功）
-			void* windowHandle = m_visualizationServer->getRenderWindowHandle();
-			if (windowHandle)
+			MeshVisualizationServer* runningServer = GetServerInstance();
+			if (runningServer && runningServer->isRunning())
 			{
-				// 窗口显示成功，启动服务器
-				if (!m_visualizationServer->isRunning())
-				{
-					if (m_visualizationServer->start())
-					{
-						printProgress("网格可视化服务器已启动，端口: 54321");
-					}
-					else
-					{
-						printProgress("警告: 网格可视化服务器启动失败");
-					}
-				}
-				else
-				{
-					printProgress("网格可视化服务器已在运行");
-				}
+				printProgress("网格可视化服务器运行中，端口: 54321");
 			}
 			else
 			{
-				printProgress("警告: 渲染窗口句柄未设置，跳过服务器启动");
+				printProgress("警告: 网格可视化服务器未运行");
 			}
 		}
+		
+		RenderProcessor::show(data, vizType);
 		
 		printProgress("模型渲染显示完成");
 

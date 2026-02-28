@@ -47,9 +47,10 @@ public:
     
     /**
      * @brief 初始化处理器
+     * @param enableSocketServer 是否启动Socket服务器（默认true）
      * @return 是否成功初始化
      */
-    bool initialize();
+    bool initialize(bool enableSocketServer = true);
     
     /**
      * @brief 处理几何模型（导入+处理+渲染）

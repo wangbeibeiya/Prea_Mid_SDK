@@ -88,6 +88,12 @@ public:
      * @return 窗口句柄
      */
     void* getRenderWindowHandle() const { return m_renderWindowHandle; }
+    
+    /**
+     * @brief 获取监听端口
+     * @return 端口号
+     */
+    int getPort() const { return m_port; }
 
 private:
     int m_port;                                    ///< 监听端口

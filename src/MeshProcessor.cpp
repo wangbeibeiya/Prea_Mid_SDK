@@ -2,6 +2,7 @@
 #include <mesh/pfMesh.h>
 #include <mesh/pfMeshData.h>
 #include <mesh/pfGlobalParameters.h>
+#include <mesh/pfLocalSizeParameters.h>
 #include <mesh/pfInflationParameters.h>
 #include <base/pfGroupData.h>
 #include <geometry/pfGeometry.h>
@@ -153,6 +154,195 @@ bool MeshProcessor::setGlobalParameters(const MeshParameters& parameters, const 
         }
     }
     
+    return true;
+}
+
+bool MeshProcessor::setLocalMeshParameters(const std::vector<LocalFluidMeshItem>& localMeshItems,
+                                            const ProjectModelData* modelData)
+{
+    if (!m_pfMesh || !m_pfDocument)
+    {
+        setError("PFMesh或PFDocument未初始化");
+        return false;
+    }
+    
+    if (localMeshItems.empty())
+    {
+        return true;
+    }
+    
+    if (!modelData)
+    {
+        setError("设置局部网格参数需要modelData以确定RefinementSet类型");
+        return false;
+    }
+    
+    PREPRO_MESH_NAMESPACE::PFLocalSizeParameters* localSizeParams = m_pfMesh->getLocalSizeParameters();
+    if (!localSizeParams)
+    {
+        setError("无法获取局部尺寸参数对象");
+        return false;
+    }
+    
+    PREPRO_BASE_NAMESPACE::IPFEnvironment* pfGeometryEnvironment = m_pfDocument->getGeometryEnvironment();
+    PREPRO_GEOMETRY_NAMESPACE::PFGeometry* pfGeometry =
+        dynamic_cast<PREPRO_GEOMETRY_NAMESPACE::PFGeometry*>(pfGeometryEnvironment);
+    if (!pfGeometry)
+    {
+        setError("无法获取几何环境");
+        return false;
+    }
+    
+    PREPRO_BASE_NAMESPACE::PFData geometryData;
+    if (pfGeometry->getAllData(geometryData) != PREPRO_BASE_NAMESPACE::PFStatus::EOkay)
+    {
+        setError("获取几何数据失败");
+        return false;
+    }
+    
+    int volumesNum = geometryData.getVolumeSize();
+    PREPRO_BASE_NAMESPACE::PFVolume** volumes = geometryData.getVolumes();
+    if (!volumes || volumesNum <= 0)
+    {
+        setError("未找到体对象");
+        return false;
+    }
+    
+    const auto& setList = modelData->GetSetList();
+    
+    for (const auto& item : localMeshItems)
+    {
+        if (!item.RefinementSet.has_value() || item.RefinementSet->empty())
+        {
+            printProgress("跳过局部网格项: RefinementSet为空");
+            continue;
+        }
+        
+        const std::string& refinementSet = item.RefinementSet.value();
+        
+        // 在SetList中查找RefinementSet对应的集合
+        const SetItemBase* matchedSet = nullptr;
+        for (const auto& setItem : setList)
+        {
+            if (!setItem) continue;
+            if (setItem->SetName.has_value() && setItem->SetName.value() == refinementSet)
+            {
+                matchedSet = setItem.get();
+                break;
+            }
+        }
+        
+        if (!matchedSet)
+        {
+            printProgress("警告: 未在SetList中找到RefinementSet \"" + refinementSet + "\"，跳过");
+            continue;
+        }
+        
+        // 单位转换：毫米 -> 米（与FluidMeshInfo一致）
+        double minSize = item.MinMeshSize.has_value() ? (item.MinMeshSize.value() / 1000.0) : 0.001;
+        double maxSize = item.MaxMeshSize.has_value() ? (item.MaxMeshSize.value() / 1000.0) : 0.01;
+        double growthRate = item.GrowthRate.value_or(1.2);
+        double normalAngle = item.NormalAngle.value_or(18.0);
+        
+        std::string setType = matchedSet->SetType.value_or("Solid");
+        
+        if (setType == "Solid")
+        {
+            // 体类型：对该体所有面组应用相同的局部网格参数
+            std::set<std::string> targetVolumeNames;
+            targetVolumeNames.insert(refinementSet);
+            std::string oldName = modelData->mapNewVolumeNameToOld(refinementSet);
+            if (!oldName.empty() && oldName != refinementSet)
+            {
+                targetVolumeNames.insert(oldName);
+            }
+            
+            for (int i = 0; i < volumesNum; i++)
+            {
+                PREPRO_BASE_NAMESPACE::PFVolume* volume = volumes[i];
+                if (!volume) continue;
+                
+                char* volName = volume->getName();
+                std::string volNameStr = volName ? std::string(volName) : "";
+                if (volNameStr.empty() || targetVolumeNames.find(volNameStr) == targetVolumeNames.end())
+                {
+                    continue;
+                }
+                
+                int groupsNum = volume->getGroupSize();
+                PREPRO_BASE_NAMESPACE::PFGroup** groups = volume->getGroups();
+                if (!groups || groupsNum <= 0) continue;
+                
+                for (int j = 0; j < groupsNum; j++)
+                {
+                    PREPRO_BASE_NAMESPACE::PFGroup* group = groups[j];
+                    if (!group) continue;
+                    
+                    char* groupName = group->getName();
+                    if (!groupName) continue;
+                    
+                    std::string groupNameStr(groupName);
+                    if (groupNameStr.find("node") != std::string::npos ||
+                        groupNameStr.find("edge") != std::string::npos ||
+                        (groupNameStr.size() > 0 && groupNameStr[0] == '.'))
+                    {
+                        continue;
+                    }
+                    
+                    PREPRO_BASE_NAMESPACE::PFStatus status = localSizeParams->setMinimunAndMaximunSize(groupNameStr.c_str(), minSize, maxSize);
+                    if (status != PREPRO_BASE_NAMESPACE::PFStatus::EOkay)
+                    {
+                        printProgress("警告: 无法为面组 " + groupNameStr + " 设置局部尺寸");
+                        continue;
+                    }
+                    status = localSizeParams->setGrowthRate(groupNameStr.c_str(), growthRate);
+                    if (status != PREPRO_BASE_NAMESPACE::PFStatus::EOkay)
+                    {
+                        printProgress("警告: 无法为面组 " + groupNameStr + " 设置增长率");
+                    }
+                    status = localSizeParams->setCurvatureNormalAngle(groupNameStr.c_str(), normalAngle);
+                    if (status != PREPRO_BASE_NAMESPACE::PFStatus::EOkay)
+                    {
+                        printProgress("警告: 无法为面组 " + groupNameStr + " 设置曲率法向角");
+                    }
+                    
+                    printProgress("已为体 " + volNameStr + " 的面组 " + groupNameStr + " 设置局部网格: min=" +
+                        std::to_string(minSize) + ", max=" + std::to_string(maxSize));
+                }
+            }
+        }
+        else if (setType == "Face")
+        {
+            // 面类型：仅对该面组应用局部网格参数
+            std::string groupNameStr = refinementSet;
+            
+            PREPRO_BASE_NAMESPACE::PFStatus status = localSizeParams->setMinimunAndMaximunSize(groupNameStr.c_str(), minSize, maxSize);
+            if (status != PREPRO_BASE_NAMESPACE::PFStatus::EOkay)
+            {
+                printProgress("警告: 无法为面组 " + groupNameStr + " 设置局部尺寸");
+                continue;
+            }
+            status = localSizeParams->setGrowthRate(groupNameStr.c_str(), growthRate);
+            if (status != PREPRO_BASE_NAMESPACE::PFStatus::EOkay)
+            {
+                printProgress("警告: 无法为面组 " + groupNameStr + " 设置增长率");
+            }
+            status = localSizeParams->setCurvatureNormalAngle(groupNameStr.c_str(), normalAngle);
+            if (status != PREPRO_BASE_NAMESPACE::PFStatus::EOkay)
+            {
+                printProgress("警告: 无法为面组 " + groupNameStr + " 设置曲率法向角");
+            }
+            
+            printProgress("已为面组 " + groupNameStr + " 设置局部网格: min=" +
+                std::to_string(minSize) + ", max=" + std::to_string(maxSize));
+        }
+        else
+        {
+            printProgress("警告: 不支持的SetType \"" + setType + "\"，跳过");
+        }
+    }
+    
+    printProgress("局部网格参数设置完成");
     return true;
 }
 

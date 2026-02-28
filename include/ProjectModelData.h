@@ -140,6 +140,25 @@ struct FluidMeshInfo
 };
 
 /**
+ * @brief 局部流体网格信息项
+ * 对应 LocalFluidMeshsInfo.LocalFluidMeshsInfo 数组中的单个元素
+ */
+struct LocalFluidMeshItem
+{
+    std::optional<std::string> Name;           ///< 局部网格名称
+    std::optional<std::string> RefinementSet;   ///< 参考集合名称（对应 SetList 中的 SetName）
+    std::optional<double> MinMeshSize;          ///< 最小网格尺寸（单位：毫米，与 FluidMeshInfo 一致）
+    std::optional<double> MaxMeshSize;          ///< 最大网格尺寸（单位：毫米）
+    std::optional<double> GrowthRate;          ///< 增长率
+    std::optional<double> NormalAngle;         ///< 曲率法向角度
+    
+    LocalFluidMeshItem() = default;
+    
+    nlohmann::json toJson() const;
+    void fromJson(const nlohmann::json& json);
+};
+
+/**
  * @brief 项目模型数据类
  * 包含项目配置数据（工作目录、项目名称等）和模型集合数据（模型树、集合列表等）
  */
@@ -186,6 +205,10 @@ public:
     const FluidMeshInfo& getFluidMeshInfo() const { return FluidMeshInfo; }
     FluidMeshInfo& getFluidMeshInfo() { return FluidMeshInfo; }
     void setFluidMeshInfo(const FluidMeshInfo& info) { FluidMeshInfo = info; }
+    
+    // LocalFluidMeshsInfo 访问方法
+    const std::vector<LocalFluidMeshItem>& getLocalFluidMeshsInfo() const { return LocalFluidMeshsInfo; }
+    std::vector<LocalFluidMeshItem>& getLocalFluidMeshsInfo() { return LocalFluidMeshsInfo; }
     
     // === ModelTree 基本访问 ===
     const std::vector<std::shared_ptr<ModelItem>>& GetModelTree() const { return ModelTree; }
@@ -246,6 +269,9 @@ private:
     
     // 流体网格信息
     FluidMeshInfo FluidMeshInfo;
+    
+    // 局部流体网格信息列表
+    std::vector<LocalFluidMeshItem> LocalFluidMeshsInfo;
     
     // 模型树
     std::vector<std::shared_ptr<ModelItem>> ModelTree;

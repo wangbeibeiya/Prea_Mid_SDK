@@ -104,6 +104,16 @@ public:
     bool createVolumeMeshBySurfaceMesh(bool withInflation = false, bool withPolyhedron = false);
     
     /**
+     * @brief 根据 LocalFluidMeshsInfo 设置局部网格参数
+     * @param localMeshItems 局部网格配置列表（从 JSON 的 LocalFluidMeshsInfo.LocalFluidMeshsInfo 解析）
+     * @param modelData 项目模型数据（包含 SetList，用于根据 RefinementSet 确定体/面类型）
+     * @return 是否成功设置
+     * @note RefinementSet 对应 SetList 中的 SetName；若 SetType 为 Solid 则对该体所有面组应用相同参数，若为 Face 则仅对该面组应用
+     */
+    bool setLocalMeshParameters(const std::vector<LocalFluidMeshItem>& localMeshItems,
+                                const ProjectModelData* modelData = nullptr);
+
+    /**
      * @brief 根据FluidZoneSet设置边界层参数
      * @param fluidZoneSetName 流体区域集合名称（对应SetList中的SetName）
      * @param parameters 边界层参数
