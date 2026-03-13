@@ -43,7 +43,8 @@ public:
     bool analyzeVolumes(ProjectModelData* modelData = nullptr, 
                        double tolerance = 1e-6,
                        GeometryModel* geometryModel = nullptr,
-                       std::unordered_map<std::string, std::vector<std::string>>* volumeFaceGroupsMap = nullptr);
+                       std::unordered_map<std::string, std::vector<std::string>>* volumeFaceGroupsMap = nullptr,
+                       std::vector<std::string>* unmatchedVolumeNames = nullptr);
     
     /**
      * @brief 设置进度回调函数

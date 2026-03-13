@@ -4,6 +4,7 @@
 #include <sstream>
 #include <algorithm>
 #include <set>
+#include <filesystem>
 
 // 使用 nlohmann/json 库（单头文件版本）
 #include <json.hpp>
@@ -723,6 +724,68 @@ std::string ProjectModelData::mapNewVolumeNameToOld(const std::string& newName) 
         }
     }
     return newName;
+}
+
+bool ProjectModelData::saveVolumeRenameMapToCache(const std::string& cacheDir) const
+{
+    if (cacheDir.empty() || VolumeRenameMap.empty())
+        return true;
+    try
+    {
+        std::filesystem::create_directories(cacheDir);
+        std::filesystem::path p(cacheDir);
+        p /= "VolumeRenameMap.json";
+        json j = json::array();
+        for (const auto& pair : VolumeRenameMap)
+        {
+            j.push_back({{"oldName", pair.first}, {"newName", pair.second}});
+        }
+        std::ofstream f(p);
+        if (!f.is_open())
+            return false;
+        f << j.dump(4);
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+bool ProjectModelData::loadVolumeRenameMapFromCache(const std::string& cacheDir)
+{
+    if (cacheDir.empty())
+        return false;
+    try
+    {
+        std::filesystem::path p(cacheDir);
+        p /= "VolumeRenameMap.json";
+        if (!std::filesystem::exists(p))
+            return false;
+        std::ifstream f(p);
+        if (!f.is_open())
+            return false;
+        json j;
+        f >> j;
+        f.close();
+        if (!j.is_array())
+            return false;
+        VolumeRenameMap.clear();
+        for (const auto& item : j)
+        {
+            if (item.contains("oldName") && item.contains("newName"))
+            {
+                VolumeRenameMap.emplace_back(
+                    item["oldName"].get<std::string>(),
+                    item["newName"].get<std::string>());
+            }
+        }
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
 }
 
 std::set<std::string> ProjectModelData::getNonWallBoundaryConditionNames() const

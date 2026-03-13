@@ -76,6 +76,13 @@ public:
      * @return 是否成功导入
      */
     bool importMesh(const std::string& filePath);
+
+    /**
+     * @brief 打开 ppcf 项目文档（用于加载已保存的几何/网格数据）
+     * @param filePath ppcf 文件路径
+     * @return 是否成功打开
+     */
+    bool openDocument(const std::string& filePath);
     
     /**
      * @brief 导入后处理结果

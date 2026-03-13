@@ -1,12 +1,17 @@
 # Source files
 set(SOURCES
     Logger.cpp
-    ModelProcessor.cpp
+    RenderThreadBridge.cpp
+    VolumeProcessor.cpp
     GeometryProcessor.cpp
     MeshProcessor.cpp
     main.cpp
     RenderProcessor.cpp
+    SocketCommandAPI.cpp
     MeshVisualizationServer.cpp
+    VolumeVisualizationServer.cpp
+    ModelProcessingServer.cpp
+    DataInteractionServer.cpp
     commonMethods.cpp
     GeometryAPI.cpp
     GeometryDataStructures.cpp
@@ -52,6 +57,12 @@ target_link_libraries(${PROJECT_NAME}
 
 # Link VTK libraries
 target_link_libraries(${PROJECT_NAME} ${VTK_LIBRARIES})
+
+# Qt5 Core（SDK openDocument 等内部使用 Qt，需 QCoreApplication 存在以避免 0xC0000005）
+if(MAPPING_GEOMETRY_NEEDS_QT5_CORE)
+    target_link_libraries(${PROJECT_NAME} Qt5::Core)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE MAPPING_GEOMETRY_HAS_QT5_CORE)
+endif()
 
 # Link third-party SDK libraries (adjust library filename as needed)
 # target_link_libraries(${PROJECT_NAME} ${THIRD_PARTY_SDK_DIR}/lib/your_sdk_library.lib)

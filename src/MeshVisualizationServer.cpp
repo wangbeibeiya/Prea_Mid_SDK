@@ -1,20 +1,7 @@
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#endif
-
 #include "MeshVisualizationServer.h"
 #include "RenderProcessor.h"
+#include "VolumeVisualizationServer.h"
+#include "RenderThreadBridge.h"
 #include <base/pfGroupData.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderer.h>
@@ -87,25 +74,58 @@ extern "C" {
 }
 
 MeshVisualizationServer::MeshVisualizationServer(int port)
-    : m_port(port)
-    , m_running(false)
-    , m_renderWindowHandle(nullptr)
+    : m_renderWindowHandle(nullptr)
     , m_renderData(nullptr)
     , m_visualizationType(1)
-#ifdef _WIN32
-    , m_listenSocket(INVALID_SOCKET)
-#else
-    , m_listenSocket(-1)
-#endif
+    , m_ownsSocket(true)
 {
-    // 注册为全局服务器实例（用于在SetRenderSession中启动）
+    m_socketAPI = std::make_unique<SocketCommandAPI>(port);
+    SocketCommandAPI* api = m_socketAPI.get();
+
+    // 注册网格相关命令（Mesh 写在函数名中）
+    api->registerCommand("GetMeshWindowHandle", [this](const json& p) { return handleGetWindowHandle(p); });
+    api->registerCommand("ResetMeshCamera", [this](const json& p) { return handleResetCamera(p); });
+    api->registerCommand("RenderMesh", [this](const json& p) { return handleRender(p); });
+    api->registerCommand("SetMeshSize", [this](const json& p) { return handleSetSize(p); });
+    api->registerCommand("ToggleMeshEdges", [this](const json& p) { return handleToggleEdges(p); });
+    api->registerCommand("SetMeshRepresentation", [this](const json& p) { return handleSetRepresentation(p); });
+    api->registerCommand("ToggleMeshWireframe", [this](const json& p) { return handleToggleWireframe(p); });
+    api->registerCommand("ToggleMeshPoints", [this](const json& p) { return handleTogglePoints(p); });
+    api->registerCommand("SetMeshTransparency", [this](const json& p) { return handleSetTransparency(p); });
+    api->registerCommand("ToggleMeshColorByGroup", [this](const json& p) { return handleToggleColorByGroup(p); });
+
+    std::lock_guard<std::mutex> lock(g_serverInstanceMutex);
+    g_serverInstance = this;
+}
+
+MeshVisualizationServer::MeshVisualizationServer(SocketCommandAPI* sharedAPI)
+    : m_renderWindowHandle(nullptr)
+    , m_renderData(nullptr)
+    , m_visualizationType(1)
+    , m_sharedAPI(sharedAPI)
+    , m_ownsSocket(false)
+{
+    if (!m_sharedAPI) return;
+
+    // 注册网格相关命令（Mesh 写在函数名中）
+    m_sharedAPI->registerCommand("GetMeshWindowHandle", [this](const json& p) { return handleGetWindowHandle(p); });
+    m_sharedAPI->registerCommand("ResetMeshCamera", [this](const json& p) { return handleResetCamera(p); });
+    m_sharedAPI->registerCommand("RenderMesh", [this](const json& p) { return handleRender(p); });
+    m_sharedAPI->registerCommand("SetMeshSize", [this](const json& p) { return handleSetSize(p); });
+    m_sharedAPI->registerCommand("ToggleMeshEdges", [this](const json& p) { return handleToggleEdges(p); });
+    m_sharedAPI->registerCommand("SetMeshRepresentation", [this](const json& p) { return handleSetRepresentation(p); });
+    m_sharedAPI->registerCommand("ToggleMeshWireframe", [this](const json& p) { return handleToggleWireframe(p); });
+    m_sharedAPI->registerCommand("ToggleMeshPoints", [this](const json& p) { return handleTogglePoints(p); });
+    m_sharedAPI->registerCommand("SetMeshTransparency", [this](const json& p) { return handleSetTransparency(p); });
+    m_sharedAPI->registerCommand("ToggleMeshColorByGroup", [this](const json& p) { return handleToggleColorByGroup(p); });
+
     std::lock_guard<std::mutex> lock(g_serverInstanceMutex);
     g_serverInstance = this;
 }
 
 MeshVisualizationServer::~MeshVisualizationServer()
 {
-    stop();
+    if (m_ownsSocket) stop();
     // 清除全局服务器实例指针
     std::lock_guard<std::mutex> lock(g_serverInstanceMutex);
     if (g_serverInstance == this)
@@ -114,136 +134,33 @@ MeshVisualizationServer::~MeshVisualizationServer()
     }
 }
 
+SocketCommandAPI* MeshVisualizationServer::getAPI() const
+{
+    return m_ownsSocket ? m_socketAPI.get() : m_sharedAPI;
+}
+
 bool MeshVisualizationServer::start()
 {
-    if (m_running)
-    {
-        return true;
-    }
-
-#ifdef _WIN32
-    // 初始化Winsock
-    int result = WSAStartup(MAKEWORD(2, 2), &m_wsaData);
-    if (result != 0)
-    {
-        std::cerr << "[MeshVisualizationServer] WSAStartup失败: " << result << std::endl;
-        return false;
-    }
-#endif
-
-    // 创建socket
-#ifdef _WIN32
-    m_listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (m_listenSocket == INVALID_SOCKET)
-    {
-        std::cerr << "[MeshVisualizationServer] 创建socket失败" << std::endl;
-        WSACleanup();
-        return false;
-    }
-#else
-    m_listenSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (m_listenSocket < 0)
-    {
-        std::cerr << "[MeshVisualizationServer] 创建socket失败" << std::endl;
-        return false;
-    }
-#endif
-
-    // 设置socket选项（允许地址重用）
-    int opt = 1;
-#ifdef _WIN32
-    if (setsockopt(m_listenSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt)) == SOCKET_ERROR)
-#else
-    if (setsockopt(m_listenSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
-#endif
-    {
-        std::cerr << "[MeshVisualizationServer] 设置socket选项失败" << std::endl;
-#ifdef _WIN32
-        closesocket(m_listenSocket);
-        WSACleanup();
-#else
-        close(m_listenSocket);
-#endif
-        return false;
-    }
-
-    // 绑定地址
-    sockaddr_in serverAddr;
-    memset(&serverAddr, 0, sizeof(serverAddr));
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(m_port);
-
-#ifdef _WIN32
-    if (bind(m_listenSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR)
-    {
-        std::cerr << "[MeshVisualizationServer] 绑定地址失败，端口: " << m_port << std::endl;
-        closesocket(m_listenSocket);
-        WSACleanup();
-        return false;
-    }
-
-    // 开始监听
-    if (listen(m_listenSocket, SOMAXCONN) == SOCKET_ERROR)
-    {
-        std::cerr << "[MeshVisualizationServer] 监听失败" << std::endl;
-        closesocket(m_listenSocket);
-        WSACleanup();
-        return false;
-    }
-#else
-    if (bind(m_listenSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) < 0)
-    {
-        std::cerr << "[MeshVisualizationServer] 绑定地址失败，端口: " << m_port << std::endl;
-        close(m_listenSocket);
-        return false;
-    }
-
-    if (listen(m_listenSocket, 5) < 0)
-    {
-        std::cerr << "[MeshVisualizationServer] 监听失败" << std::endl;
-        close(m_listenSocket);
-        return false;
-    }
-#endif
-
-    m_running = true;
-    m_serverThread = std::thread(&MeshVisualizationServer::serverLoop, this);
-    
-    std::cout << "[MeshVisualizationServer] 服务器已启动，监听端口: " << m_port << std::endl;
-    return true;
+    SocketCommandAPI* api = getAPI();
+    return api && api->start();
 }
 
 void MeshVisualizationServer::stop()
 {
-    if (!m_running)
-    {
-        return;
-    }
+    SocketCommandAPI* api = getAPI();
+    if (api) api->stop();
+}
 
-    m_running = false;
+bool MeshVisualizationServer::isRunning() const
+{
+    SocketCommandAPI* api = getAPI();
+    return api && api->isRunning();
+}
 
-#ifdef _WIN32
-    if (m_listenSocket != INVALID_SOCKET)
-    {
-        closesocket(m_listenSocket);
-        m_listenSocket = INVALID_SOCKET;
-    }
-    WSACleanup();
-#else
-    if (m_listenSocket >= 0)
-    {
-        close(m_listenSocket);
-        m_listenSocket = -1;
-    }
-#endif
-
-    if (m_serverThread.joinable())
-    {
-        m_serverThread.join();
-    }
-
-    std::cout << "[MeshVisualizationServer] 服务器已停止" << std::endl;
+int MeshVisualizationServer::getPort() const
+{
+    SocketCommandAPI* api = getAPI();
+    return api ? api->getPort() : 0;
 }
 
 void MeshVisualizationServer::setRenderWindowHandle(void* windowHandle)
@@ -282,218 +199,12 @@ void MeshVisualizationServer::setVisualizationType(int type)
     std::cout << "[MeshVisualizationServer] 可视化类型已设置为: " << type << std::endl;
 }
 
-void MeshVisualizationServer::serverLoop()
-{
-    while (m_running)
-    {
-#ifdef _WIN32
-        sockaddr_in clientAddr;
-        int clientAddrLen = sizeof(clientAddr);
-        SOCKET clientSocket = accept(m_listenSocket, (sockaddr*)&clientAddr, &clientAddrLen);
-        
-        if (clientSocket == INVALID_SOCKET)
-        {
-            if (m_running)
-            {
-                std::cerr << "[MeshVisualizationServer] 接受连接失败" << std::endl;
-            }
-            continue;
-        }
-#else
-        sockaddr_in clientAddr;
-        socklen_t clientAddrLen = sizeof(clientAddr);
-        int clientSocket = accept(m_listenSocket, (sockaddr*)&clientAddr, &clientAddrLen);
-        
-        if (clientSocket < 0)
-        {
-            if (m_running)
-            {
-                std::cerr << "[MeshVisualizationServer] 接受连接失败" << std::endl;
-            }
-            continue;
-        }
-#endif
-
-        char clientIP[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &clientAddr.sin_addr, clientIP, INET_ADDRSTRLEN);
-        std::cout << "[MeshVisualizationServer] 客户端连接: " << clientIP << ":" << ntohs(clientAddr.sin_port) << std::endl;
-
-        // 在新线程中处理客户端
-        std::thread clientThread(&MeshVisualizationServer::handleClient, this, clientSocket);
-        clientThread.detach();
-    }
-}
-
-void MeshVisualizationServer::handleClient(SOCKET clientSocket)
-{
-    const int BUFFER_SIZE = 4096;
-    char buffer[BUFFER_SIZE];
-    
-    while (m_running)
-    {
-        // 接收数据长度（4字节）
-        int length = 0;
-        int received = receiveData(clientSocket, (char*)&length, sizeof(length));
-        if (received != sizeof(length) || length <= 0 || length > BUFFER_SIZE)
-        {
-            break;
-        }
-        
-        // 接收JSON数据
-        received = receiveData(clientSocket, buffer, length);
-        if (received != length)
-        {
-            break;
-        }
-        
-        buffer[length] = '\0';
-        
-        try
-        {
-            // 解析JSON命令
-            json commandJson = json::parse(buffer);
-            
-            // 处理命令
-            json response = processCommand(commandJson);
-            
-            // 发送响应
-            if (!sendResponse(clientSocket, response))
-            {
-                break;
-            }
-        }
-        catch (const json::exception& e)
-        {
-            json errorResponse;
-            errorResponse["success"] = false;
-            errorResponse["error"] = std::string("JSON解析错误: ") + e.what();
-            sendResponse(clientSocket, errorResponse);
-        }
-        catch (const std::exception& e)
-        {
-            json errorResponse;
-            errorResponse["success"] = false;
-            errorResponse["error"] = std::string("处理命令时发生错误: ") + e.what();
-            sendResponse(clientSocket, errorResponse);
-        }
-    }
-    
-#ifdef _WIN32
-    closesocket(clientSocket);
-#else
-    close(clientSocket);
-#endif
-    
-    std::cout << "[MeshVisualizationServer] 客户端断开连接" << std::endl;
-}
-
-json MeshVisualizationServer::processCommand(const json& commandJson)
-{
-    json response;
-    
-    if (!commandJson.contains("command") || !commandJson["command"].is_string())
-    {
-        response["success"] = false;
-        response["error"] = "缺少command字段或格式错误";
-        return response;
-    }
-    
-    std::string command = commandJson["command"].get<std::string>();
-    json params = commandJson.value("params", json::object());
-    
-    // 注意：不在processCommand中加锁，让每个处理函数自己管理锁，避免死锁
-    // 各个处理函数会根据需要获取 g_sessionMutex
-    
-    if (command == "GetWindowHandle")
-    {
-        return handleGetWindowHandle(params);
-    }
-    else if (command == "SetTransparency")
-    {
-        return handleSetTransparency(params);
-    }
-    else if (command == "ToggleEdges")
-    {
-        return handleToggleEdges(params);
-    }
-    else if (command == "SetRepresentation")
-    {
-        return handleSetRepresentation(params);
-    }
-    else if (command == "ToggleWireframe")
-    {
-        return handleToggleWireframe(params);
-    }
-    else if (command == "TogglePoints")
-    {
-        return handleTogglePoints(params);
-    }
-    else if (command == "ToggleColorByGroup")
-    {
-        return handleToggleColorByGroup(params);
-    }
-    else if (command == "ResetCamera")
-    {
-        return handleResetCamera(params);
-    }
-    else if (command == "Render")
-    {
-        return handleRender(params);
-    }
-    else if (command == "SetSize")
-    {
-        return handleSetSize(params);
-    }
-    else
-    {
-        response["success"] = false;
-        response["error"] = "未知命令: " + command;
-        return response;
-    }
-}
-
 json MeshVisualizationServer::handleGetWindowHandle(const json& params)
 {
     json response;
     
-    // 从全局会话中获取窗口句柄和窗口对象（需要加锁）
-    void* windowHandle = nullptr;
-    vtkRenderWindow* renderWindow = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_sessionMutex);
-        windowHandle = g_renderSession.windowHandle;
-        renderWindow = g_renderSession.renderWindow;
-    }
-    
-    // 如果窗口句柄无效，尝试重新获取
-    if (!windowHandle && renderWindow)
-    {
-#ifdef _WIN32
-        // 强制渲染以确保窗口创建
-        renderWindow->Render();
-        
-        // 等待窗口创建（最多等待1秒）
-        for (int i = 0; i < 20; ++i)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            renderWindow->Render();
-            windowHandle = reinterpret_cast<void*>(renderWindow->GetGenericWindowId());
-            if (windowHandle)
-            {
-                HWND hwnd = reinterpret_cast<HWND>(windowHandle);
-                if (IsWindow(hwnd))
-                {
-                    // 更新全局会话中的窗口句柄
-                    {
-                        std::lock_guard<std::mutex> lock(g_sessionMutex);
-                        g_renderSession.windowHandle = windowHandle;
-                    }
-                    break;
-                }
-            }
-        }
-#endif
-    }
+    std::lock_guard<std::mutex> lock(g_sessionMutex);
+    void* windowHandle = g_renderSession.windowHandle;
     
     if (windowHandle)
     {
@@ -882,59 +593,6 @@ json MeshVisualizationServer::handleSetSize(const json& params)
     return response;
 }
 
-bool MeshVisualizationServer::sendResponse(SOCKET clientSocket, const json& response)
-{
-    std::string responseStr = response.dump();
-    int length = static_cast<int>(responseStr.length());
-    
-    // 发送长度
-#ifdef _WIN32
-    int sent = send(clientSocket, (char*)&length, sizeof(length), 0);
-    if (sent != sizeof(length))
-    {
-        return false;
-    }
-    
-    // 发送数据
-    sent = send(clientSocket, responseStr.c_str(), length, 0);
-    return sent == length;
-#else
-    int sent = send(clientSocket, &length, sizeof(length), 0);
-    if (sent != sizeof(length))
-    {
-        return false;
-    }
-    
-    sent = send(clientSocket, responseStr.c_str(), length, 0);
-    return sent == length;
-#endif
-}
-
-int MeshVisualizationServer::receiveData(SOCKET clientSocket, char* buffer, int bufferSize)
-{
-    int totalReceived = 0;
-    
-    while (totalReceived < bufferSize)
-    {
-#ifdef _WIN32
-        int received = recv(clientSocket, buffer + totalReceived, bufferSize - totalReceived, 0);
-        if (received <= 0)
-        {
-            return -1;
-        }
-#else
-        int received = recv(clientSocket, buffer + totalReceived, bufferSize - totalReceived, 0);
-        if (received <= 0)
-        {
-            return -1;
-        }
-#endif
-        totalReceived += received;
-    }
-    
-    return totalReceived;
-}
-
 // 导出函数：设置渲染会话（供RenderProcessor调用）
 extern "C" {
     void SetRenderSession(vtkRenderWindow* window, vtkRenderer* renderer, 
@@ -951,8 +609,10 @@ extern "C" {
             g_renderSession.renderWindow = window;
             g_renderSession.renderer = renderer;
             g_renderSession.actors = actors;
+            SetVolumeRenderSession(window, renderer, interactor);
             g_renderSession.edgeActors = edgeActors;
             g_renderSession.interactor = interactor;
+            RenderThreadBridge::ScheduleProcessTimer(interactor);
             
             if (window)
             {

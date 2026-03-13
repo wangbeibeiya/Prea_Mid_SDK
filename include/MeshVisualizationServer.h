@@ -1,30 +1,10 @@
 #pragma once
 
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
-#else
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-typedef int SOCKET;
-#define INVALID_SOCKET -1
-#define SOCKET_ERROR -1
-#endif
-
 #include <string>
 #include <memory>
-#include <functional>
-#include <thread>
-#include <atomic>
 #include <mutex>
-#include <map>
 
+#include "SocketCommandAPI.h"
 #include "json.hpp"
 using json = nlohmann::json;
 
@@ -44,10 +24,16 @@ class MeshVisualizationServer
 {
 public:
     /**
-     * @brief 构造函数
+     * @brief 构造函数（独占模式：创建并拥有自己的 Socket）
      * @param port 监听端口，默认54321
      */
     explicit MeshVisualizationServer(int port = 54321);
+
+    /**
+     * @brief 构造函数（共享模式：使用外部 SocketCommandAPI，与 VolumeVisualizationServer 共用同一端口）
+     * @param sharedAPI 共享的 Socket 命令 API，由外部创建并管理生命周期
+     */
+    explicit MeshVisualizationServer(SocketCommandAPI* sharedAPI);
     
     /**
      * @brief 析构函数
@@ -69,7 +55,7 @@ public:
      * @brief 检查服务器是否正在运行
      * @return 是否正在运行
      */
-    bool isRunning() const { return m_running; }
+    bool isRunning() const;
     
     /**
      * @brief 设置当前渲染窗口句柄（用于后续操作）
@@ -93,56 +79,23 @@ public:
      * @brief 获取监听端口
      * @return 端口号
      */
-    int getPort() const { return m_port; }
+    int getPort() const;
+
+    /**
+     * @brief 获取 Socket API 实例，用于扩展注册新命令
+     * @return Socket API 指针
+     */
+    SocketCommandAPI* getSocketAPI() { return getAPI(); }
+    const SocketCommandAPI* getSocketAPI() const { return getAPI(); }
 
 private:
-    int m_port;                                    ///< 监听端口
-    std::atomic<bool> m_running;                  ///< 服务器运行状态
-    std::thread m_serverThread;                   ///< 服务器线程
-    std::mutex m_mutex;                            ///< 互斥锁
-    
-    void* m_renderWindowHandle;                    ///< 当前渲染窗口句柄
-    const PREPRO_BASE_NAMESPACE::PFData* m_renderData; ///< 当前渲染数据
-    int m_visualizationType;                      ///< 可视化类型
-    
-    SOCKET m_listenSocket;                         ///< 监听socket
-#ifdef _WIN32
-    WSADATA m_wsaData;                             ///< Winsock数据
-#endif
-    
-    /**
-     * @brief 服务器主循环
-     */
-    void serverLoop();
-    
-    /**
-     * @brief 处理客户端连接
-     * @param clientSocket 客户端socket
-     */
-    void handleClient(SOCKET clientSocket);
-    
-    /**
-     * @brief 处理命令
-     * @param commandJson 命令JSON对象
-     * @return 响应JSON对象
-     */
-    json processCommand(const json& commandJson);
-    
-    /**
-     * @brief 发送响应
-     * @param clientSocket 客户端socket
-     * @param response 响应JSON对象
-     */
-    bool sendResponse(SOCKET clientSocket, const json& response);
-    
-    /**
-     * @brief 接收数据
-     * @param clientSocket 客户端socket
-     * @param buffer 接收缓冲区
-     * @param bufferSize 缓冲区大小
-     * @return 接收到的字节数，-1表示错误
-     */
-    int receiveData(SOCKET clientSocket, char* buffer, int bufferSize);
+    std::unique_ptr<SocketCommandAPI> m_socketAPI;  ///< 独占模式下的 Socket API
+    SocketCommandAPI* m_sharedAPI = nullptr;       ///< 共享模式下的 Socket API 指针（不拥有）
+    bool m_ownsSocket = true;                       ///< 是否拥有 Socket（共享模式下为 false）
+    std::mutex m_mutex;                                   ///< 成员变量互斥锁
+    void* m_renderWindowHandle;                           ///< 当前渲染窗口句柄
+    const PREPRO_BASE_NAMESPACE::PFData* m_renderData;   ///< 当前渲染数据
+    int m_visualizationType;                             ///< 可视化类型
     
     // 命令处理函数
     json handleGetWindowHandle(const json& params);
@@ -155,4 +108,6 @@ private:
     json handleResetCamera(const json& params);
     json handleRender(const json& params);
     json handleSetSize(const json& params);
+
+    SocketCommandAPI* getAPI() const;  ///< 获取当前使用的 API（独占或共享）
 };

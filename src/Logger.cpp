@@ -20,7 +20,7 @@ Logger::~Logger()
     closeLogFile();
 }
 
-bool Logger::initializeLogFile(const std::string& logFilePath)
+bool Logger::initializeLogFile(const std::string& logFilePath, bool append)
 {
     try
     {
@@ -38,8 +38,8 @@ bool Logger::initializeLogFile(const std::string& logFilePath)
             std::filesystem::create_directories(logDir);
         }
         
-        // 打开日志文件（重写模式，每次执行都清空旧内容）
-        m_logFile.open(logFilePath, std::ios::out | std::ios::trunc);
+        std::ios_base::openmode mode = std::ios::out | (append ? std::ios::app : std::ios::trunc);
+        m_logFile.open(logFilePath, mode);
         if (!m_logFile.is_open())
         {
             std::cerr << "警告: 无法打开日志文件: " << logFilePath << std::endl;

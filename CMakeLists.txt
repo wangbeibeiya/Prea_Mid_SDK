@@ -37,6 +37,26 @@ message(STATUS "Third-party SDK path: ${THIRD_PARTY_SDK_DIR}")
 message(STATUS "VTK found: ${VTK_FOUND}")
 message(STATUS "VTK version: ${VTK_VERSION}")
 
+# Qt5 Core（SDK 内部使用 Qt，openDocument 等需 QCoreApplication 存在）
+find_package(Qt5 QUIET COMPONENTS Core)
+if(Qt5_FOUND)
+    set(MAPPING_GEOMETRY_NEEDS_QT5_CORE ON)
+else()
+    message(STATUS "Qt5 Core not found, MappingGeometry may crash on openDocument")
+endif()
+
 # Add subdirectories
 add_subdirectory(src)
+
+# Socket 测试客户端（可选，需要 Qt5）
+find_package(Qt5 QUIET COMPONENTS Widgets)
+if(Qt5_FOUND)
+    add_subdirectory(socket_test_client)
+    # 确保主程序和客户端同时编译
+    add_custom_target(build_all ALL DEPENDS MappingGeometry SocketTestClient)
+else()
+    message(STATUS "Qt5 Widgets not found, skip SocketTestClient")
+    add_custom_target(build_all ALL DEPENDS MappingGeometry)
+endif()
+
 # add_subdirectory(tests)  # 注释掉测试项目 

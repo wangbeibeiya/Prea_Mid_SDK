@@ -258,6 +258,20 @@ public:
      */
     std::set<std::string> getNonWallBoundaryConditionNames() const;
 
+    /**
+     * @brief 将 VolumeRenameMap 保存到缓存文件（几何识别完成后调用）
+     * @param cacheDir 缓存目录，通常为 WorkingDirectory/ProjectName
+     * @return 是否成功
+     */
+    bool saveVolumeRenameMapToCache(const std::string& cacheDir) const;
+
+    /**
+     * @brief 从缓存文件加载 VolumeRenameMap（网格划分前调用）
+     * @param cacheDir 缓存目录，通常为 WorkingDirectory/ProjectName
+     * @return 是否成功加载（文件不存在返回 false，不视为错误）
+     */
+    bool loadVolumeRenameMapFromCache(const std::string& cacheDir);
+
 private:
     std::optional<std::string> Name;
     std::optional<std::string> Description;

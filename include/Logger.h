@@ -27,9 +27,10 @@ public:
     /**
      * @brief 初始化日志文件
      * @param logFilePath 日志文件路径
+     * @param append true=追加模式，false=覆盖模式
      * @return 是否成功初始化
      */
-    bool initializeLogFile(const std::string& logFilePath);
+    bool initializeLogFile(const std::string& logFilePath, bool append = true);
     
     /**
      * @brief 关闭日志文件

@@ -257,6 +257,41 @@ bool GeometryAPI::importMesh(const std::string& filePath)
     }
 }
 
+bool GeometryAPI::openDocument(const std::string& filePath)
+{
+    if (!m_pfApplication)
+    {
+        setError("应用程序未初始化");
+        return false;
+    }
+    if (!m_initialized && !initialize())
+    {
+        return false;
+    }
+    try
+    {
+        PREPRO_BASE_NAMESPACE::PFDocument* doc = m_pfApplication->openDocument(filePath.c_str());
+        if (!doc)
+        {
+            setError("打开文档失败: " + filePath);
+            return false;
+        }
+        m_pfDocument = doc;
+        m_pfGeometry = dynamic_cast<PREPRO_GEOMETRY_NAMESPACE::PFGeometry*>(m_pfDocument->getGeometryEnvironment());
+        if (!m_pfGeometry)
+        {
+            setError("文档中无几何环境");
+            return false;
+        }
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        setError(std::string("打开文档异常: ") + e.what());
+        return false;
+    }
+}
+
 bool GeometryAPI::importPostProcessResult(const std::string& filePath)
 {
     if (!m_pfApplication)
@@ -352,9 +387,10 @@ bool GeometryAPI::saveDocument(const std::string& filePath)
         
         if (!filePath.empty())
         {
-            // 如果指定了路径，使用saveAs
+            // 与 demo 一致：setDocumentPath 后调用 save()，确保几何和网格都被正确序列化
+            // （demo 中 save() 后再 saveAs 到另一路径；此处仅保存到指定路径，save 即可）
             m_pfDocument->setDocumentPath(filePath.c_str());
-            status = m_pfDocument->saveAs(filePath.c_str());
+            status = m_pfDocument->save();
         }
         else
         {

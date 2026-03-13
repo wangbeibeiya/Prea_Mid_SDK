@@ -1,5 +1,5 @@
-// ModelProcessorExample.cpp - 演示新的模型处理器功能
-#include "ModelProcessor.h"
+// VolumeProcessorExample.cpp - 演示新的模型处理器功能
+#include "VolumeProcessor.h"
 #include <iostream>
 #include <vector>
 #include <string>
@@ -12,7 +12,7 @@ void demonstrateBasicProcessing()
     std::cout << "\n=== 基本模型处理示例 ===" << std::endl;
     
     // 创建模型处理器
-    ModelProcessor processor("E:/wbb/GitSrc/Pera_CFD_SDK/PFSDK_20251103/examples/");
+    VolumeProcessor processor("E:/wbb/GitSrc/Pera_CFD_SDK/PFSDK_20251103/examples/");
     
     // 初始化处理器
     if (!processor.initialize())
@@ -22,7 +22,7 @@ void demonstrateBasicProcessing()
     }
     
     // 设置处理选项
-    ModelProcessor::ProcessOptions options;
+    VolumeProcessor::ProcessOptions options;
     options.enableQuickRepair = true;
     options.enableFindVolumes = true;
     options.enableRendering = true;
@@ -50,7 +50,7 @@ void demonstrateBatchProcessing()
 {
     std::cout << "\n=== 批量模型处理示例 ===" << std::endl;
     
-    ModelProcessor processor("E:/wbb/GitSrc/Pera_CFD_SDK/PFSDK_20251103/examples/");
+    VolumeProcessor processor("E:/wbb/GitSrc/Pera_CFD_SDK/PFSDK_20251103/examples/");
     
     if (!processor.initialize())
     {
@@ -66,7 +66,7 @@ void demonstrateBatchProcessing()
     };
     
     // 设置批量处理选项
-    ModelProcessor::ProcessOptions batchOptions;
+    VolumeProcessor::ProcessOptions batchOptions;
     batchOptions.enableQuickRepair = true;
     batchOptions.enableFindVolumes = true;
     batchOptions.enableRendering = false; // 批量处理时禁用渲染以提高速度
@@ -86,7 +86,7 @@ void demonstrateCustomOptions()
 {
     std::cout << "\n=== 自定义处理选项示例 ===" << std::endl;
     
-    ModelProcessor processor;
+    VolumeProcessor processor;
     
     if (!processor.initialize())
     {
@@ -95,7 +95,7 @@ void demonstrateCustomOptions()
     }
     
     // 创建自定义处理选项
-    ModelProcessor::ProcessOptions customOptions;
+    VolumeProcessor::ProcessOptions customOptions;
     customOptions.enableQuickRepair = true;
     customOptions.enableFindVolumes = false;  // 禁用体积查找
     customOptions.enableRendering = true;
@@ -127,7 +127,7 @@ void demonstrateMeshProcessing()
 {
     std::cout << "\n=== 网格处理示例 ===" << std::endl;
     
-    ModelProcessor processor;
+    VolumeProcessor processor;
     
     if (!processor.initialize())
     {
@@ -154,7 +154,7 @@ void demonstrateDirectAPIUsage()
 {
     std::cout << "\n=== 直接使用几何API示例 ===" << std::endl;
     
-    ModelProcessor processor;
+    VolumeProcessor processor;
     
     if (!processor.initialize())
     {
@@ -198,7 +198,7 @@ void demonstrateSupportedFormats()
 {
     std::cout << "\n=== 支持的文件格式 ===" << std::endl;
     
-    ModelProcessor processor;
+    VolumeProcessor processor;
     
     auto formats = processor.getSupportedFormats();
     
@@ -214,7 +214,7 @@ void demonstrateSupportedFormats()
  */
 int main()
 {
-    std::cout << "=== ModelProcessor 功能演示程序 ===" << std::endl;
+    std::cout << "=== VolumeProcessor 功能演示程序 ===" << std::endl;
     std::cout << "本程序演示新的模型处理器的各种功能" << std::endl;
     
     try

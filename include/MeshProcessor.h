@@ -12,9 +12,10 @@
 #include <vector>
 
 /**
- * @brief 网格处理器类
- * 
- * 负责网格划分相关操作
+ * @brief 网格处理器类（仅网格划分）
+ *
+ * 负责网格参数设置、体积网格生成等。
+ * 不包含几何识别，几何识别由 VolumeProcessor 独立完成。
  */
 class MeshProcessor {
 public:

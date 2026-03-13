@@ -1,11 +1,10 @@
-#ifndef MODELPROCESSOR_H
-#define MODELPROCESSOR_H
+#ifndef VOLUMEPROCESSOR_H
+#define VOLUMEPROCESSOR_H
 
 #include "../src/GeometryAPI.h"
 #include "GeometryDataStructures.h"
 #include "Logger.h"
 #include "GeometryProcessor.h"
-#include "MeshProcessor.h"
 #include "MeshVisualizationServer.h"
 #include <string>
 #include <vector>
@@ -15,12 +14,12 @@
 #include <base/pfGroupData.h>
 
 /**
- * @brief 模型处理器类
- * 
- * 负责模型的导入、映射、处理和渲染流程管理
- * 包括自动执行quickRepair、findVolumes等操作
+ * @brief 体处理器类（仅几何识别）
+ *
+ * 负责几何导入、快速修复、查找体、匹配重命名等。
+ * 不包含网格划分，网格划分由 MeshProcessor 独立完成。
  */
-class ModelProcessor {
+class VolumeProcessor {
 public:
     /**
      * @brief 处理选项结构体
@@ -37,13 +36,14 @@ public:
     /**
      * @brief 构造函数
      * @param examplePath 示例文件路径
+     * @param appLogger 应用级日志（可选，用于 Socket 流程时写入统一日志）
      */
-    explicit ModelProcessor(const std::string& examplePath = "");
+    explicit VolumeProcessor(const std::string& examplePath = "", class Logger* appLogger = nullptr);
     
     /**
      * @brief 析构函数
      */
-    ~ModelProcessor();
+    ~VolumeProcessor();
     
     /**
      * @brief 初始化处理器
@@ -53,25 +53,77 @@ public:
     bool initialize(bool enableSocketServer = true);
     
     /**
-     * @brief 处理几何模型（导入+处理+渲染）
+     * @brief 1. 导入几何模型（仅导入，顶层数据保存在处理器内供后续步骤使用）
+     * @param filePath 模型文件路径
+     * @param importMode 导入模式：1-首次导入，2-替换模式，3-追加模式
+     * @param modelData 可选的 ProjectModelData，用于日志路径、保存路径
+     * @return 是否成功
+     */
+    bool importGeometryModel(const std::string& filePath,
+                            int importMode = 1,
+                            class ProjectModelData* modelData = nullptr);
+
+    /**
+     * @brief 2. 几何处理（在导入成功的顶层数据上执行 quickRepair + findVolumes）
+     * @param options 处理选项
+     * @return 是否成功
+     */
+    bool executeGeometryProcessing(const ProcessOptions& options);
+
+    /**
+     * @brief 3. 几何识别匹配（在已有顶层数据上执行 analyzeVolumes 匹配重命名）
+     * @param modelData ProjectModelData 用于 SetList 匹配
+     * @return 是否成功
+     */
+    bool executeGeometryMatching(class ProjectModelData* modelData);
+
+    /**
+     * @brief 刷新顶层数据（几何识别匹配创建新 group 后需调用，以更新体/面组数据）
+     * @return 是否成功
+     */
+    bool refreshGeometryData();
+
+    /**
+     * @brief 保存几何 ppcf 到 modelData 指定的路径
+     * @param modelData 用于获取 WorkingDirectory、ProjectName
+     * @return 是否成功
+     */
+    bool saveGeometryPpcf(class ProjectModelData* modelData) const;
+
+    /**
+     * @brief 保存几何 ppcf 到指定路径
+     * @param ppcfPath 完整的 ppcf 文件路径
+     * @return 是否成功
+     */
+    bool saveGeometryPpcfToPath(const std::string& ppcfPath);
+
+    /**
+     * @brief 打开 ppcf 并执行几何识别匹配，填充 modelData 的 VolumeRenameMap
+     * @param ppcfPath ppcf 文件路径
+     * @param modelData 已从 JSON 加载的 ProjectModelData，匹配结果写入其 VolumeRenameMap
+     * @return 是否成功
+     */
+    bool openPpcfAndRunMatching(const std::string& ppcfPath, class ProjectModelData* modelData);
+
+    /**
+     * @brief 处理几何模型（完整流程：导入 + 几何处理 + 几何识别匹配 + 保存）
      * @param filePath 模型文件路径
      * @param importMode 导入模式：1-首次导入，2-替换模式，3-追加模式
      * @param options 处理选项
-     * @param modelData 可选的 ProjectModelData 对象，用于匹配和重命名体（非const，因为需要保存重命名映射）
+     * @param modelData 可选的 ProjectModelData 对象，用于匹配和重命名体
      * @return 是否成功处理
      */
-    bool processGeometryModel(const std::string& filePath, 
-                              int importMode = 1, 
+    bool processGeometryModel(const std::string& filePath,
+                              int importMode = 1,
                               const ProcessOptions& options = ProcessOptions(),
                               class ProjectModelData* modelData = nullptr);
-    
+
     /**
-     * @brief 处理网格模型（导入+渲染）
-     * @param filePath 网格文件路径
-     * @param enableRendering 是否启用渲染
-     * @return 是否成功处理
+     * @brief 从 JSON 路径执行几何匹配（导入几何、快速修复、查找体、保存几何 ppcf）
+     * @param jsonPath JSON 项目文件路径，需包含 WorkingDirectory、ProjectName 等
+     * @return 是否成功
      */
-    bool processMeshModel(const std::string& filePath, bool enableRendering = true);
+    bool processGeometryMatchingFromJson(const std::string& jsonPath);
     
     /**
      * @brief 处理后处理结果（导入+显示提示）
@@ -139,6 +191,12 @@ public:
      */
     void reset();
 
+    /**
+     * @brief 获取最近一次几何匹配中未匹配成功的体名称列表
+     * @return 未匹配体名称列表，需在 ExecuteGeometryMatching 之后调用
+     */
+    const std::vector<std::string>& getLastUnmatchedVolumeNames() const { return m_lastUnmatchedVolumeNames; }
+
 private:
     std::unique_ptr<GeometryAPI> m_geometryAPI;   ///< 几何API实例
     ProcessOptions m_defaultOptions;              ///< 默认处理选项
@@ -146,19 +204,20 @@ private:
     std::string m_currentImportFilePath;          ///< 当前导入的文件路径
     
     // 日志管理器
-    Logger m_logger;                              ///< 日志管理器实例
+    Logger* m_appLogger = nullptr;                ///< 应用级日志（可选，Socket 流程时使用）
+    Logger m_internalLogger;                      ///< 内部日志（无 appLogger 时使用）
     
-    // 几何处理器和网格处理器
+    // 几何处理器
     std::unique_ptr<GeometryProcessor> m_geometryProcessor;  ///< 几何处理器实例
-    std::unique_ptr<MeshProcessor> m_meshProcessor;            ///< 网格处理器实例
-    
-    // 网格可视化服务器（Socket控制）
+
+    // 网格可视化服务器（Socket控制，用于几何渲染）
     std::unique_ptr<MeshVisualizationServer> m_visualizationServer;  ///< 可视化服务器实例
-    
+
     // 输出控制
     bool m_outputGroupJson = false;               ///< 是否输出group.json文件（默认false）
-    bool m_enableMeshGeneration = true;          ///< 是否在保存ppcf之前生成网格（默认false）
     
+    std::vector<std::string> m_lastUnmatchedVolumeNames;  ///< 最近一次几何匹配中未匹配成功的体名称
+
     // 统计信息
     int m_processedGeometryCount;                 ///< 已处理的几何文件数
     int m_processedMeshCount;                     ///< 已处理的网格文件数
@@ -172,13 +231,6 @@ private:
      */
     void setError(const std::string& error);
     
-    /**
-     * @brief 执行几何处理流程
-     * @param options 处理选项
-     * @param modelData 可选的 ProjectModelData 对象，用于匹配和重命名体（非const，因为需要保存重命名映射）
-     * @return 是否成功
-     */
-    bool executeGeometryProcessing(const ProcessOptions& options, class ProjectModelData* modelData = nullptr);
     
     /**
      * @brief 执行渲染显示
@@ -227,4 +279,4 @@ private:
 
 };
 
-#endif // MODELPROCESSOR_H
+#endif // VOLUMEPROCESSOR_H

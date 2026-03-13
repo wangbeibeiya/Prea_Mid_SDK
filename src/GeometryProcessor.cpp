@@ -20,6 +20,7 @@ namespace {
 		int matchedVolumes = 0;
 		int renamedVolumes = 0;
 		std::vector<std::pair<std::string, std::string>> volumeRenames;
+		std::vector<std::string> unmatchedVolumeNames;
 		
 		int totalFaces = 0;
 		int matchedFaces = 0;
@@ -62,7 +63,8 @@ void GeometryProcessor::printProgress(const std::string& message)
 bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData, 
                                       double tolerance,
                                       GeometryModel* geometryModel,
-                                      std::unordered_map<std::string, std::vector<std::string>>* volumeFaceGroupsMap)
+                                      std::unordered_map<std::string, std::vector<std::string>>* volumeFaceGroupsMap,
+                                      std::vector<std::string>* unmatchedVolumeNames)
 {
 	// 统计信息
 	MatchStatistics stats;
@@ -418,9 +420,12 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 					}
 
 					// 优化2：减少日志输出，只在体数量少时输出未匹配信息
-					if (!foundMatch && m_logger && volumes_num <= 10)
+					if (!foundMatch)
 					{
-						m_logger->logOutputLine("  ✗ 未找到匹配的JSON体");
+						std::string unmatchedName = currentName.empty() ? ("Volume_" + std::to_string(vol_id)) : currentName;
+						stats.unmatchedVolumeNames.push_back(unmatchedName);
+						if (m_logger && volumes_num <= 10)
+							m_logger->logOutputLine("  ✗ 未找到匹配的JSON体");
 					}
 				}
 			}
@@ -580,6 +585,11 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 		if (geometryModel)
 		{
 			geometryModel->printSummary();
+		}
+
+		if (unmatchedVolumeNames)
+		{
+			*unmatchedVolumeNames = stats.unmatchedVolumeNames;
 		}
 
 		return true;

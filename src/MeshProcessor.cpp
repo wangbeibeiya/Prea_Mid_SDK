@@ -48,6 +48,11 @@ bool MeshProcessor::setGlobalParameters(const MeshParameters& parameters, const 
         setError("PFMesh未初始化");
         return false;
     }
+
+    printProgress("已从JSON加载网格参数: MinSize=" + std::to_string(parameters.minSize) +
+        ", MaxSize=" + std::to_string(parameters.maxSize) +
+        ", GrowthRate=" + std::to_string(parameters.growthRate) +
+        ", NormalAngle=" + std::to_string(parameters.curvatureNormalAngle));
     
     PREPRO_MESH_NAMESPACE::PFGlobalParameters* globalParameters = m_pfMesh->getGlobalParameters();
     if (!globalParameters)
@@ -135,9 +140,30 @@ bool MeshProcessor::setGlobalParameters(const MeshParameters& parameters, const 
         return false;
     }
     
+    printProgress("全局网格参数设置完成");
+
     // 如果提供了边界层参数，在设置完全局参数后自动设置边界层
     if (parameters.boundaryLayerParams.has_value() && parameters.fluidZoneSetName.has_value())
     {
+        auto bl = parameters.boundaryLayerParams.value();
+        // 第一层高度过小（<10μm）时 SDK 可能不生成边界层，进行下限保护
+        const double MIN_FIRST_LAYER_HEIGHT = 1e-5;  // 10 微米
+        if (bl.firstLayerHeight < MIN_FIRST_LAYER_HEIGHT)
+        {
+            printProgress("警告: FirstLayerHeight=" + std::to_string(bl.firstLayerHeight) +
+                " 过小，SDK 可能不生成边界层。已提升至 " + std::to_string(MIN_FIRST_LAYER_HEIGHT) + " m (10μm)");
+            bl.firstLayerHeight = MIN_FIRST_LAYER_HEIGHT;
+        }
+        printProgress("已从JSON加载边界层参数: FirstLayerHeight=" + std::to_string(bl.firstLayerHeight) +
+            ", GrowthRate=" + std::to_string(bl.growthRate) +
+            ", LayersNumber=" + std::to_string(bl.layersNumber) +
+            ", FluidZoneSet=" + parameters.fluidZoneSetName.value());
+        if (!parameters.excludedBoundaryNames.empty())
+        {
+            std::string excluded;
+            for (const auto& n : parameters.excludedBoundaryNames) excluded += (excluded.empty() ? "" : " ") + n;
+            printProgress("排除的边界名称: " + excluded);
+        }
         printProgress("全局网格参数设置完成，开始设置边界层参数...");
         if (!setBoundaryLayersByFluidZoneSet(parameters.fluidZoneSetName.value(), 
                                              parameters.boundaryLayerParams.value(), 
@@ -152,6 +178,10 @@ bool MeshProcessor::setGlobalParameters(const MeshParameters& parameters, const 
         {
             printProgress("边界层参数设置完成");
         }
+    }
+    else
+    {
+        printProgress("未配置边界层参数，跳过边界层设置");
     }
     
     return true;
@@ -168,8 +198,22 @@ bool MeshProcessor::setLocalMeshParameters(const std::vector<LocalFluidMeshItem>
     
     if (localMeshItems.empty())
     {
+        printProgress("未配置局部网格参数，跳过");
         return true;
     }
+
+    printProgress("已从JSON加载局部网格参数，共 " + std::to_string(localMeshItems.size()) + " 项");
+    for (size_t idx = 0; idx < localMeshItems.size(); idx++)
+    {
+        const auto& it = localMeshItems[idx];
+        std::string name = it.Name.value_or("(未命名)");
+        std::string refSet = it.RefinementSet.value_or("");
+        double minM = it.MinMeshSize.value_or(0);
+        double maxM = it.MaxMeshSize.value_or(0);
+        printProgress("  [" + std::to_string(idx + 1) + "] Name=" + name + ", RefinementSet=" + refSet +
+            ", MinSize=" + std::to_string(minM) + "mm, MaxSize=" + std::to_string(maxM) + "mm");
+    }
+    printProgress("开始设置局部网格参数...");
     
     if (!modelData)
     {
@@ -238,6 +282,9 @@ bool MeshProcessor::setLocalMeshParameters(const std::vector<LocalFluidMeshItem>
             continue;
         }
         
+        printProgress("  处理局部网格项: " + (item.Name.value_or("")) + ", RefinementSet=" + refinementSet + 
+            ", SetType=" + matchedSet->SetType.value_or(""));
+        
         // 单位转换：毫米 -> 米（与FluidMeshInfo一致）
         double minSize = item.MinMeshSize.has_value() ? (item.MinMeshSize.value() / 1000.0) : 0.001;
         double maxSize = item.MaxMeshSize.has_value() ? (item.MaxMeshSize.value() / 1000.0) : 0.01;
@@ -249,13 +296,32 @@ bool MeshProcessor::setLocalMeshParameters(const std::vector<LocalFluidMeshItem>
         if (setType == "Solid")
         {
             // 体类型：对该体所有面组应用相同的局部网格参数
+            // 体名称映射：先找 JSON 名称，找不到则用修改前的名称（几何识别后体可能仍为原名）
             std::set<std::string> targetVolumeNames;
             targetVolumeNames.insert(refinementSet);
             std::string oldName = modelData->mapNewVolumeNameToOld(refinementSet);
             if (!oldName.empty() && oldName != refinementSet)
             {
                 targetVolumeNames.insert(oldName);
+                printProgress("  从重命名映射中找到 \"" + refinementSet + "\" -> \"" + oldName + "\"，将同时匹配两种名称");
             }
+            auto* solidSet = dynamic_cast<const SetSolidItem*>(matchedSet);
+            if (solidSet)
+            {
+                for (const auto& solidItem : solidSet->Items)
+                {
+                    if (!solidItem.Path.empty())
+                    {
+                        targetVolumeNames.insert(solidItem.Path);
+                    }
+                }
+            }
+            std::string targetStr;
+            for (const auto& n : targetVolumeNames) {
+                if (!targetStr.empty()) targetStr += ", ";
+                targetStr += "\"" + n + "\"";
+            }
+            printProgress("    目标体名称集合: " + targetStr);
             
             for (int i = 0; i < volumesNum; i++)
             {
@@ -269,6 +335,7 @@ bool MeshProcessor::setLocalMeshParameters(const std::vector<LocalFluidMeshItem>
                     continue;
                 }
                 
+                printProgress("    匹配到体: \"" + volNameStr + "\" (RefinementSet=\"" + refinementSet + "\")");
                 int groupsNum = volume->getGroupSize();
                 PREPRO_BASE_NAMESPACE::PFGroup** groups = volume->getGroups();
                 if (!groups || groupsNum <= 0) continue;
@@ -343,6 +410,7 @@ bool MeshProcessor::setLocalMeshParameters(const std::vector<LocalFluidMeshItem>
     }
     
     printProgress("局部网格参数设置完成");
+    printProgress("已设置局部网格参数，共 " + std::to_string(localMeshItems.size()) + " 项");
     return true;
 }
 
@@ -602,19 +670,21 @@ bool MeshProcessor::setBoundaryLayersByFluidZoneSet(const std::string& fluidZone
                     auto* solidSet = dynamic_cast<SetSolidItem*>(setItem.get());
                     if (solidSet)
                     {
-                        // 1) 新名称（SetName），例如 "LT"
+                        // 体名称映射：先找 JSON 名称，找不到则用修改前的名称（几何识别后体可能仍为原名）
                         targetVolumeNames.insert(fluidZoneSetName);
-                        
-                        // 2) 尝试通过ProjectModelData的重命名映射，将新名称映射回原始名称
                         std::string oldName = modelData->mapNewVolumeNameToOld(fluidZoneSetName);
                         if (!oldName.empty() && oldName != fluidZoneSetName)
                         {
                             targetVolumeNames.insert(oldName);
                             printProgress("从重命名映射中找到体对象名称映射: \"" + fluidZoneSetName + "\" -> \"" + oldName + "\"");
                         }
-                        
+                        for (const auto& solidItem : solidSet->Items)
+                        {
+                            if (!solidItem.Path.empty())
+                                targetVolumeNames.insert(solidItem.Path);
+                        }
                         printProgress("从SetList中找到集合 \"" + fluidZoneSetName + 
-                                     "\"，将使用名称匹配体对象");
+                                     "\"，将使用名称匹配体对象（含 JSON 名、重命名前名、SetList.Path）");
                     }
                 }
                 break;

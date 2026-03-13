@@ -51,6 +51,7 @@
 #include <vtkCommand.h>
 #include <base/pfGroupData.h>
 #include <map>
+#include <unordered_map>
 #include <vector>
 #include <string>
 #include <thread>
@@ -62,6 +63,8 @@
 // 注意：不直接包含 MeshVisualizationServer.h，避免 Windows Socket 头文件冲突
 // 使用前向声明和 extern "C" 函数
 class MeshVisualizationServer;  // 前向声明
+
+#include "VolumeVisualizationAPI.h"
 
 extern "C" {
     void SetRenderSession(vtkRenderWindow*, vtkRenderer*, vtkActorCollection*, vtkRenderWindowInteractor*, vtkActorCollection* edgeActors = nullptr);
@@ -602,6 +605,7 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
     // 收集所有actors，用于网格可视化控制
     vtkSmartPointer<vtkActorCollection> actorCollection = vtkSmartPointer<vtkActorCollection>::New();
     vtkSmartPointer<vtkActorCollection> edgeActorCollection = vtkSmartPointer<vtkActorCollection>::New();
+    std::unordered_map<std::string, std::vector<vtkActor*>> volumeActorMap;
 
     auto addActorWithEdgeOverlay = [&](vtkActor* groupActor) {
         if (!groupActor) return;
@@ -640,6 +644,8 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
     {
         PREPRO_BASE_NAMESPACE::PFVolume* volume = volumes[i];
         checkName = volume->getName();
+        char* volName = volume->getName();
+        std::string volNameStr = (volName && volName[0]) ? std::string(volName) : ("Volume_" + std::to_string(volume->getId()));
         volumeGroups = volume->getGroups();
         for (unsigned int j = 0; j < volume->getGroupSize(); j++)
         {
@@ -647,6 +653,7 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
             checkName = currentGroup->getName();
             vtkSmartPointer<vtkActor> groupActor = buildVTKGroup(currentGroup, type);
             addActorWithEdgeOverlay(groupActor);
+            volumeActorMap[volNameStr].push_back(groupActor.GetPointer());
         }
     }
 
@@ -724,6 +731,8 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
     // 保存渲染会话状态（供Socket服务器使用）
     // 注意：此时窗口已渲染，可以安全地获取窗口句柄并启动服务器
     SetRenderSession(demoWindow, demoRender, actorCollection, demoInteractor, edgeActorCollection);
+    // 必须在 SetRenderSession 之后调用，否则 SetVolumeRenderSession 会清空 volumeActorMap
+    SetVolumeActorMapping(volumeActorMap);
     
     // 在主线程中启动交互循环（阻塞调用，直到窗口关闭）
     // 这样确保OpenGL上下文和窗口消息循环都在主线程中正确运行
@@ -809,6 +818,7 @@ HWND RenderProcessor::showAndGetWindowHandle(const PREPRO_BASE_NAMESPACE::PFData
     // 收集所有actors，用于网格可视化控制
     vtkSmartPointer<vtkActorCollection> actorCollection = vtkSmartPointer<vtkActorCollection>::New();
     vtkSmartPointer<vtkActorCollection> edgeActorCollection = vtkSmartPointer<vtkActorCollection>::New();
+    std::unordered_map<std::string, std::vector<vtkActor*>> volumeActorMap;
 
     auto addActorWithEdgeOverlay = [&](vtkActor* groupActor) {
         if (!groupActor) return;
@@ -847,6 +857,8 @@ HWND RenderProcessor::showAndGetWindowHandle(const PREPRO_BASE_NAMESPACE::PFData
     {
         PREPRO_BASE_NAMESPACE::PFVolume* volume = volumes[i];
         checkName = volume->getName();
+        char* volName = volume->getName();
+        std::string volNameStr = (volName && volName[0]) ? std::string(volName) : ("Volume_" + std::to_string(volume->getId()));
         volumeGroups = volume->getGroups();
         for (unsigned int j = 0; j < volume->getGroupSize(); j++)
         {
@@ -854,6 +866,7 @@ HWND RenderProcessor::showAndGetWindowHandle(const PREPRO_BASE_NAMESPACE::PFData
             checkName = currentGroup->getName();
             vtkSmartPointer<vtkActor> groupActor = buildVTKGroup(currentGroup, type);
             addActorWithEdgeOverlay(groupActor);
+            volumeActorMap[volNameStr].push_back(groupActor.GetPointer());
         }
     }
 
@@ -918,6 +931,8 @@ HWND RenderProcessor::showAndGetWindowHandle(const PREPRO_BASE_NAMESPACE::PFData
 
     // 保存渲染会话（供 Socket 服务器使用，支持 E 键边界切换等）
     SetRenderSession(demoWindow, demoRender, actorCollection, demoInteractor, edgeActorCollection);
+    // 必须在 SetRenderSession 之后调用，否则 SetVolumeRenderSession 会清空 volumeActorMap
+    SetVolumeActorMapping(volumeActorMap);
 
     // 获取窗口句柄
     HWND windowHandle = reinterpret_cast<HWND>(demoWindow->GetGenericWindowId());
