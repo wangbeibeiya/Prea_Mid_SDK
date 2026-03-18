@@ -72,24 +72,17 @@ extern "C" {
     void SetServerInstance(MeshVisualizationServer*);
     bool IsServerRunning(MeshVisualizationServer*);
     void StopServer(MeshVisualizationServer*);
+    void ClearRenderSessionOnWindowClose();
 }
 
-// 窗口关闭回调函数：当窗口关闭时停止 Socket 服务器
+// 窗口关闭回调函数：清除会话句柄（确保再次 ShowGeometry/ShowMesh 时 GetVolumeWindowHandle/GetMeshWindowHandle 返回最新句柄）
+// Socket 服务器仅在程序退出时停止，窗口关闭不停止服务
 void OnWindowClose(vtkObject* caller, unsigned long eventId, void* clientData, void* callData)
 {
-    // VTK 窗口关闭时触发 ExitEvent
     if (eventId == vtkCommand::ExitEvent)
     {
-        std::cout << "[RenderProcessor] 检测到窗口关闭事件，准备停止 Socket 服务器..." << std::endl;
-        
-        // 从全局状态获取服务器实例并停止
-        MeshVisualizationServer* server = GetServerInstance();
-        if (server && IsServerRunning(server))
-        {
-            std::cout << "[RenderProcessor] 正在停止 Socket 服务器..." << std::endl;
-            StopServer(server);
-            std::cout << "[RenderProcessor] Socket 服务器已停止" << std::endl;
-        }
+        std::cout << "[RenderProcessor] 检测到窗口关闭事件，清除渲染会话..." << std::endl;
+        ClearRenderSessionOnWindowClose();
     }
 }
 
@@ -717,8 +710,7 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
 
     demoInteractor->Initialize();
     
-    // 注册窗口关闭事件回调（仅在网格类型时）
-    if (type == VisualizationType::EMesh)
+    // 注册窗口关闭事件回调（几何和网格均需清除会话，确保再次 Show 时 GetWindowHandle 返回最新句柄）
     {
         vtkSmartPointer<vtkCallbackCommand> closeCallback = vtkSmartPointer<vtkCallbackCommand>::New();
         closeCallback->SetCallback(OnWindowClose);
@@ -776,8 +768,7 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFGroup& pfGroup, Visual
 
     demoInteractor->Initialize();
     
-    // 注册窗口关闭事件回调（仅在网格类型时）
-    if (type == VisualizationType::EMesh)
+    // 注册窗口关闭事件回调（几何和网格均需，用于清除会话句柄）
     {
         vtkSmartPointer<vtkCallbackCommand> closeCallback = vtkSmartPointer<vtkCallbackCommand>::New();
         closeCallback->SetCallback(OnWindowClose);
@@ -1329,8 +1320,7 @@ void RenderProcessor::show(const PREPRO_BASE_NAMESPACE::PFData& shownData, Visua
 
     demoInteractor->Initialize();
     
-    // 注册窗口关闭事件回调（仅在网格类型时）
-    if (type == VisualizationType::EMesh)
+    // 注册窗口关闭事件回调（几何和网格均需，用于清除会话句柄）
     {
         vtkSmartPointer<vtkCallbackCommand> closeCallback = vtkSmartPointer<vtkCallbackCommand>::New();
         closeCallback->SetCallback(OnWindowClose);

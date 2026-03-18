@@ -31,6 +31,13 @@
 - 验证各模块权限
 - 提供详细的错误信息
 
+## Socket 命令 API
+
+通过 Socket 发送 JSON 命令可执行几何导入、网格划分、可视化等完整流程。详见 **[SOCKET_README.md](SOCKET_README.md)**。
+
+- 默认端口：12345
+- 测试客户端：`build/bin/Debug/SocketTestClient.exe`
+
 ## 文件结构
 
 ```

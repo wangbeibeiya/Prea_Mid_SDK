@@ -50,7 +50,7 @@ public:
      * @param ppcfPath 可选，几何 ppcf 文件路径；为空时从 json 的 WorkingDirectory/ProjectName 推导
      * @param logger 可选，日志对象；传入时网格划分的详细过程会输出到日志
      * @param geometryAPIIn 可选，复用几何 session 的 GeometryAPI，跳过 init + openDocument
-     * @param meshSessionOut 可选，成功时保留 GeometryAPI 供 SaveMeshPpcf 复用（仅当 geometryAPIIn 为空时）
+     * @param meshSessionOut 可选，成功时保留 GeometryAPI 供 SavePpcf 复用（仅当 geometryAPIIn 为空时）
      * @param meshSessionPathOut 可选，与 meshSessionOut 配套，记录当前打开的文档路径
      * @return 是否成功
      */
@@ -93,10 +93,10 @@ private:
     std::mutex m_sessionMutex;
     int m_nextSessionId = 0;
 
-    // 网格会话：ExecuteMeshGeneration 后保留，SaveMeshPpcf 可复用，避免重复 init + openDocument
+    // 网格会话：ExecuteMeshGeneration 后保留，SavePpcf 可复用，避免重复 init + openDocument
     std::unique_ptr<GeometryAPI> m_meshGeometryAPI;
     std::string m_meshOpenDocumentPath;
-    std::string m_meshSessionId;           // 几何 session 用于网格划分时，SaveMeshPpcf 可复用
+    std::string m_meshSessionId;           // 几何 session 用于网格划分时，SavePpcf 可复用
     std::string m_meshSessionProjectPath;  // 与 m_meshSessionId 配套的项目 ppcf 路径
     std::mutex m_meshSessionMutex;
 
@@ -113,7 +113,7 @@ private:
     json handleCloseSession(const json& params);
     json handleDeleteVolumeByName(const json& params);
     json handleGetUnmatchedVolumeNames(const json& params);
-    json handleSaveGeometryPpcf(const json& params);
-    json handleSaveMeshPpcf(const json& params);
+    json handleSavePpcf(const json& params);
     json handleGetMeshQuality(const json& params);
+    json handleImportPpcf(const json& params);
 };

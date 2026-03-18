@@ -1,5 +1,8 @@
 #include "VolumeVisualizationServer.h"
 #include "RenderThreadBridge.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <vtkRenderWindow.h>
 #include <vtkRenderer.h>
 #include <vtkRenderWindowInteractor.h>
@@ -78,10 +81,26 @@ json VolumeVisualizationServer::handleGetWindowHandle(const json& params)
 {
     json response;
     std::lock_guard<std::mutex> lock(g_volumeSessionMutex);
-    if (g_volumeSession.windowHandle)
+    void* windowHandle = g_volumeSession.windowHandle;
+    if (windowHandle)
     {
+#ifdef _WIN32
+        HWND hwnd = reinterpret_cast<HWND>(windowHandle);
+        if (IsWindow(hwnd))
+        {
+            response["success"] = true;
+            response["windowHandle"] = reinterpret_cast<uintptr_t>(windowHandle);
+        }
+        else
+        {
+            response["success"] = false;
+            response["error"] = "窗口句柄无效（窗口已关闭）";
+            response["windowHandle"] = reinterpret_cast<uintptr_t>(windowHandle);
+        }
+#else
         response["success"] = true;
-        response["windowHandle"] = reinterpret_cast<uintptr_t>(g_volumeSession.windowHandle);
+        response["windowHandle"] = reinterpret_cast<uintptr_t>(windowHandle);
+#endif
     }
     else
     {
@@ -165,6 +184,20 @@ void SetVolumeRenderSession(vtkRenderWindow* window, vtkRenderer* renderer,
     {
         g_volumeSession.windowHandle = reinterpret_cast<void*>(window->GetGenericWindowId());
     }
+    else
+    {
+        g_volumeSession.windowHandle = nullptr;
+    }
+}
+
+void ClearVolumeRenderSession()
+{
+    std::lock_guard<std::mutex> lock(g_volumeSessionMutex);
+    g_volumeSession.renderWindow = nullptr;
+    g_volumeSession.renderer = nullptr;
+    g_volumeSession.interactor = nullptr;
+    g_volumeSession.windowHandle = nullptr;
+    g_volumeSession.volumeActorMap.clear();
 }
 
 void SetVolumeActorMapping(const std::unordered_map<std::string, std::vector<vtkActor*>>& volumeActorMap)

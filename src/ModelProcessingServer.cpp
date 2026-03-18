@@ -40,9 +40,9 @@ ModelProcessingServer::ModelProcessingServer(SocketCommandAPI* sharedAPI, Logger
     m_sharedAPI->registerCommand("CloseSession", [this](const json& p) { return handleCloseSession(p); });
     m_sharedAPI->registerCommand("DeleteVolumeByName", [this](const json& p) { return handleDeleteVolumeByName(p); });
     m_sharedAPI->registerCommand("GetUnmatchedVolumeNames", [this](const json& p) { return handleGetUnmatchedVolumeNames(p); });
-    m_sharedAPI->registerCommand("SaveGeometryPpcf", [this](const json& p) { return handleSaveGeometryPpcf(p); });
-    m_sharedAPI->registerCommand("SaveMeshPpcf", [this](const json& p) { return handleSaveMeshPpcf(p); });
+    m_sharedAPI->registerCommand("SavePpcf", [this](const json& p) { return handleSavePpcf(p); });
     m_sharedAPI->registerCommand("GetMeshQuality", [this](const json& p) { return handleGetMeshQuality(p); });
+    m_sharedAPI->registerCommand("ImportPpcf", [this](const json& p) { return handleImportPpcf(p); });
 }
 
 VolumeProcessor* ModelProcessingServer::getSessionForDataQuery(const std::string& sessionId)
@@ -290,9 +290,9 @@ json ModelProcessingServer::handleExecuteGeometryMatching(const json& params)
         return response;
     }
 
-    // 保留 session，供 GetVolumeListNames、SaveGeometryPpcf 等从顶层数据查询
+    // 保留 session，供 GetVolumeListNames、SavePpcf 等从顶层数据查询
     response["success"] = true;
-    response["message"] = "几何识别匹配完成，session 保留可继续查询。请调用 SaveGeometryPpcf 保存 ppcf 文件。";
+    response["message"] = "几何识别匹配完成，session 保留可继续查询。请调用 SavePpcf 保存 ppcf 文件。";
     response["sessionId"] = sessionId;
     return response;
 }
@@ -598,49 +598,6 @@ json ModelProcessingServer::handleGetUnmatchedVolumeNames(const json& params)
     return response;
 }
 
-json ModelProcessingServer::handleSaveGeometryPpcf(const json& params)
-{
-    json response;
-    std::string sessionId = params.value("sessionId", "");
-    std::string ppcfPath = params.value("ppcfPath", "");
-
-    if (sessionId.empty())
-    {
-        response["success"] = false;
-        response["error"] = "缺少 sessionId 参数（请先调用 ImportGeometryModel 并执行 ExecuteGeometryMatching）";
-        return response;
-    }
-    if (ppcfPath.empty())
-    {
-        response["success"] = false;
-        response["error"] = "缺少 ppcfPath 参数";
-        return response;
-    }
-
-    VolumeProcessor* processor = getSession(sessionId);
-    if (!processor)
-    {
-        response["success"] = false;
-        response["error"] = "会话不存在或已过期: " + sessionId;
-        return response;
-    }
-
-    if (!processor->saveGeometryPpcfToPath(ppcfPath))
-    {
-        response["success"] = false;
-        response["error"] = "保存 ppcf 失败: " + processor->getLastError();
-        if (m_logger) m_logger->logOutputLine("[SaveGeometryPpcf] 失败: " + processor->getLastError());
-        return response;
-    }
-
-    response["success"] = true;
-    response["message"] = "ppcf 已保存";
-    response["sessionId"] = sessionId;
-    response["ppcfPath"] = ppcfPath;
-    if (m_logger) m_logger->logOutputLine("[SaveGeometryPpcf] 成功: " + ppcfPath);
-    return response;
-}
-
 json ModelProcessingServer::handleExecuteMeshGeneration(const json& params)
 {
     json response;
@@ -793,75 +750,75 @@ bool ModelProcessingServer::saveMeshPpcfToPath(const std::string& sourcePpcfPath
     return saveMeshPpcfFromDocument(geometryAPI, savePath, errorOut);
 }
 
-json ModelProcessingServer::handleSaveMeshPpcf(const json& params)
+json ModelProcessingServer::handleSavePpcf(const json& params)
 {
     json response;
-    std::string ppcfPath = params.value("ppcfPath", "");
     std::string savePath = params.value("savePath", "");
-
-    if (ppcfPath.empty())
+    if (savePath.empty())
     {
         response["success"] = false;
-        response["error"] = "缺少 ppcfPath 参数（包含几何和网格的 ppcf 文件路径）";
-        return response;
-    }
-    if (!std::filesystem::exists(ppcfPath))
-    {
-        response["success"] = false;
-        response["error"] = "ppcf 文件不存在: " + ppcfPath;
+        response["error"] = "缺少 savePath 参数（保存路径）";
+        if (m_logger) m_logger->logOutputLine("[SavePpcf] 失败: " + response["error"].get<std::string>());
         return response;
     }
 
-    std::string savePathResolved = savePath.empty() ? ppcfPath : savePath;
     std::string err;
+    GeometryAPI* apiToSave = nullptr;
 
-    // 优先复用 GeometryAPI，避免重复 init + openDocument
     {
         std::lock_guard<std::mutex> lock(m_meshSessionMutex);
-        std::filesystem::path reqPath(ppcfPath);
-        // 1. 复用 ExecuteMeshGeneration 独立创建的 GeometryAPI
-        if (m_meshGeometryAPI && !m_meshOpenDocumentPath.empty() &&
-            std::filesystem::path(m_meshOpenDocumentPath) == reqPath)
+        if (m_meshGeometryAPI && m_meshGeometryAPI->getDocument())
         {
-            if (saveMeshPpcfFromDocument(*m_meshGeometryAPI, savePathResolved, &err))
-            {
-                response["success"] = true;
-                response["message"] = "ppcf 已保存（复用网格会话）";
-                response["ppcfPath"] = savePathResolved;
-                if (m_logger) m_logger->logOutputLine("[SaveMeshPpcf] 成功（复用）: " + savePathResolved);
-                return response;
-            }
+            apiToSave = m_meshGeometryAPI.get();
         }
-        // 2. 复用几何 session 的 GeometryAPI（ExecuteMeshGeneration 传了 sessionId）
-        if (!m_meshSessionId.empty() && !m_meshSessionProjectPath.empty() &&
-            std::filesystem::path(m_meshSessionProjectPath) == reqPath)
+        else if (!m_meshSessionId.empty())
         {
-            VolumeProcessor* processor = getSession(m_meshSessionId);
-            GeometryAPI* api = processor ? processor->getGeometryAPI() : nullptr;
-            if (api && saveMeshPpcfFromDocument(*api, savePathResolved, &err))
+            VolumeProcessor* p = getSession(m_meshSessionId);
+            if (p && p->getGeometryAPI() && p->getGeometryAPI()->getDocument())
+                apiToSave = p->getGeometryAPI();
+        }
+    }
+
+    if (!apiToSave)
+    {
+        std::lock_guard<std::mutex> lock(m_sessionMutex);
+        for (const auto& kv : m_sessions)
+        {
+            if (kv.second)
             {
-                response["success"] = true;
-                response["message"] = "ppcf 已保存（复用几何会话）";
-                response["ppcfPath"] = savePathResolved;
-                if (m_logger) m_logger->logOutputLine("[SaveMeshPpcf] 成功（复用几何会话）: " + savePathResolved);
-                return response;
+                GeometryAPI* api = kv.second->getGeometryAPI();
+                if (api && api->getDocument())
+                {
+                    apiToSave = api;
+                    break;
+                }
             }
         }
     }
 
-    if (ModelProcessingServer::saveMeshPpcfToPath(ppcfPath, savePath, &err))
+    if (apiToSave)
     {
-        std::string targetPath = savePath.empty() ? ppcfPath : savePath;
-        response["success"] = true;
-        response["message"] = "ppcf 已保存";
-        response["ppcfPath"] = targetPath;
-        if (m_logger) m_logger->logOutputLine("[SaveMeshPpcf] 成功: " + targetPath);
+        std::filesystem::path p(savePath);
+        std::filesystem::create_directories(p.parent_path());
+        if (apiToSave->saveDocument(savePath))
+        {
+            response["success"] = true;
+            response["message"] = "ppcf 已保存（有啥保存啥：有几何保存几何，有网格+几何保存网格+几何）";
+            response["savePath"] = savePath;
+            if (m_logger) m_logger->logOutputLine("[SavePpcf] 成功: " + savePath);
+        }
+        else
+        {
+            response["success"] = false;
+            response["error"] = "保存失败: " + apiToSave->getLastError();
+            if (m_logger) m_logger->logOutputLine("[SavePpcf] 失败: " + response["error"].get<std::string>());
+        }
     }
     else
     {
         response["success"] = false;
-        response["error"] = err;
-        if (m_logger) m_logger->logOutputLine("[SaveMeshPpcf] 失败: " + err);
+        response["error"] = "无可用文档可保存（请先执行 ImportGeometryModel、ExecuteGeometryMatching、ExecuteMeshGeneration 或 ImportPpcf）";
+        if (m_logger) m_logger->logOutputLine("[SavePpcf] 失败: " + response["error"].get<std::string>());
     }
     return response;
 }
@@ -964,6 +921,61 @@ json ModelProcessingServer::handleGetMeshQuality(const json& params)
     }
     response["qualityRanges"] = countsArr;
     if (m_logger) m_logger->logOutputLine("[GetMeshQuality] 成功: " + ppcfPath);
+    return response;
+}
+
+json ModelProcessingServer::handleImportPpcf(const json& params)
+{
+    json response;
+    std::string ppcfPath = params.value("ppcfPath", "");
+    std::string importMode = params.value("importMode", "geometry");
+    if (ppcfPath.empty())
+    {
+        response["success"] = false;
+        response["error"] = "缺少 ppcfPath 参数";
+        if (m_logger) m_logger->logOutputLine("[ImportPpcf] 失败: " + response["error"].get<std::string>());
+        return response;
+    }
+    if (!std::filesystem::exists(ppcfPath))
+    {
+        response["success"] = false;
+        response["error"] = "ppcf 文件不存在: " + ppcfPath;
+        if (m_logger) m_logger->logOutputLine("[ImportPpcf] 失败: " + response["error"].get<std::string>());
+        return response;
+    }
+    bool useOpenDocument = (importMode != "mesh");
+
+    auto geometryAPI = std::make_unique<GeometryAPI>();
+    if (!geometryAPI->initialize())
+    {
+        response["success"] = false;
+        response["error"] = "GeometryAPI 初始化失败";
+        if (m_logger) m_logger->logOutputLine("[ImportPpcf] 失败: GeometryAPI 初始化失败");
+        return response;
+    }
+
+    bool opened = useOpenDocument ? geometryAPI->openDocument(ppcfPath) : geometryAPI->importMesh(ppcfPath);
+    if (!opened)
+    {
+        response["success"] = false;
+        response["error"] = std::string(useOpenDocument ? "openDocument" : "importMesh") + " 失败: " + geometryAPI->getLastError();
+        if (m_logger) m_logger->logOutputLine("[ImportPpcf] 失败: " + response["error"].get<std::string>());
+        return response;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_meshSessionMutex);
+        m_meshGeometryAPI = std::move(geometryAPI);
+        m_meshOpenDocumentPath = ppcfPath;
+        m_meshSessionId.clear();
+        m_meshSessionProjectPath.clear();
+    }
+
+    response["success"] = true;
+    response["message"] = "ppcf 已导入，顶层数据已刷新。后续 GetVolumeListNames、GetFaceGroupNamesByVolume、ShowMesh、GetMeshQuality 等可使用此 ppcfPath 或复用当前会话。";
+    response["ppcfPath"] = ppcfPath;
+    response["importMode"] = useOpenDocument ? "geometry" : "mesh";
+    if (m_logger) m_logger->logOutputLine("[ImportPpcf] 成功: " + ppcfPath);
     return response;
 }
 

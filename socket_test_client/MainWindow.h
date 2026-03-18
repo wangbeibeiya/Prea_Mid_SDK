@@ -43,6 +43,7 @@ private:
     QLineEdit* m_opacityEdit;
     QComboBox* m_representationCombo;
     QComboBox* m_enableCombo;
+    QComboBox* m_importModeCombo;
     QPushButton* m_sendBtn;
     QTextEdit* m_responseEdit;
 };

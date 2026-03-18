@@ -71,6 +71,18 @@ extern "C" {
             server->stop();
         }
     }
+
+    void ClearRenderSessionOnWindowClose() {
+        std::lock_guard<std::mutex> lock(g_sessionMutex);
+        g_renderSession.renderWindow = nullptr;
+        g_renderSession.renderer = nullptr;
+        g_renderSession.actors = nullptr;
+        g_renderSession.edgeActors = nullptr;
+        g_renderSession.interactor = nullptr;
+        g_renderSession.windowHandle = nullptr;
+        g_renderSession.renderData = nullptr;
+        ClearVolumeRenderSession();
+    }
 }
 
 MeshVisualizationServer::MeshVisualizationServer(int port)
@@ -227,7 +239,7 @@ json MeshVisualizationServer::handleGetWindowHandle(const json& params)
         else
         {
             response["success"] = false;
-            response["error"] = "窗口句柄无效（窗口不存在）";
+            response["error"] = "窗口句柄无效（窗口已关闭）";
             response["windowHandle"] = reinterpret_cast<uintptr_t>(windowHandle);
         }
 #else

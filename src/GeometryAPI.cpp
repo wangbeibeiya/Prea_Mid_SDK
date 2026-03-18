@@ -387,14 +387,13 @@ bool GeometryAPI::saveDocument(const std::string& filePath)
         
         if (!filePath.empty())
         {
-            // 与 demo 一致：setDocumentPath 后调用 save()，确保几何和网格都被正确序列化
-            // （demo 中 save() 后再 saveAs 到另一路径；此处仅保存到指定路径，save 即可）
-            m_pfDocument->setDocumentPath(filePath.c_str());
-            status = m_pfDocument->save();
+            // 保存到指定路径必须用 saveAs，否则 save() 会写入原始打开路径
+            // （demo 中保存到另一路径均使用 saveAs）
+            status = m_pfDocument->saveAs(filePath.c_str());
         }
         else
         {
-            // 如果没有指定路径，使用save
+            // 如果没有指定路径，使用 save 保存到当前文档路径
             status = m_pfDocument->save();
         }
 

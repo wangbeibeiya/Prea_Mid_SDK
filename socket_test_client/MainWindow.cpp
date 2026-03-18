@@ -50,7 +50,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_client(new Sock
     QStringList cmdList = {
         "ListCommands",
         "ImportGeometryModel", "ExecuteGeometryProcessing", "ExecuteGeometryMatching",
-        "ExecuteMeshGeneration", "ShowGeometry", "ShowMesh", "CloseSession", "DeleteVolumeByName", "SaveGeometryPpcf", "SaveMeshPpcf", "GetMeshQuality",
+        "ExecuteMeshGeneration", "ShowGeometry", "ShowMesh", "CloseSession", "DeleteVolumeByName", "SavePpcf", "GetMeshQuality", "ImportPpcf",
         "GetVolumeListNames", "GetFaceGroupNamesByVolume", "GetUnmatchedVolumeNames", "RefreshSessionData",
         "GetMeshWindowHandle", "ResetMeshCamera", "RenderMesh", "SetMeshSize",
         "ToggleMeshEdges", "SetMeshRepresentation", "ToggleMeshWireframe",
@@ -74,14 +74,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_client(new Sock
     cmdRow = new QHBoxLayout();
     cmdRow->addWidget(new QLabel("ppcfPath:"));
     m_ppcfPathEdit = new QLineEdit();
-    m_ppcfPathEdit->setPlaceholderText("ShowMesh/SaveMeshPpcf 用，空则从 jsonPath 推导");
+    m_ppcfPathEdit->setPlaceholderText("ShowMesh/GetMeshQuality 用，空则从 jsonPath 推导");
     cmdRow->addWidget(m_ppcfPathEdit);
     cmdLayout->addLayout(cmdRow);
 
     cmdRow = new QHBoxLayout();
     cmdRow->addWidget(new QLabel("savePath:"));
     m_savePathEdit = new QLineEdit();
-    m_savePathEdit->setPlaceholderText("SaveMeshPpcf 另存路径，空则覆盖原文件");
+    m_savePathEdit->setPlaceholderText("SavePpcf 保存路径（必填）");
     cmdRow->addWidget(m_savePathEdit);
     cmdLayout->addLayout(cmdRow);
 
@@ -115,6 +115,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_client(new Sock
     m_enableCombo->addItems({"true", "false"});
     m_enableCombo->setMaximumWidth(60);
     cmdRow->addWidget(m_enableCombo);
+    cmdRow->addWidget(new QLabel("importMode:"));
+    m_importModeCombo = new QComboBox();
+    m_importModeCombo->addItems({"geometry", "mesh"});
+    m_importModeCombo->setMaximumWidth(90);
+    m_importModeCombo->setToolTip("ImportPpcf 用: geometry=openDocument, mesh=importMesh");
+    cmdRow->addWidget(m_importModeCombo);
     cmdRow->addStretch();
     cmdLayout->addLayout(cmdRow);
 
@@ -178,23 +184,16 @@ void MainWindow::onSend() {
     } else if (cmd == "ExecuteMeshGeneration") {
         params["jsonPath"] = m_jsonPathEdit->text().trimmed().toStdString();
         QString sid = m_sessionIdEdit->text().trimmed();
-        if (!sid.isEmpty()) params["sessionId"] = sid.toStdString();  // 复用几何 session，可跳过 SaveGeometryPpcf
+        if (!sid.isEmpty()) params["sessionId"] = sid.toStdString();  // 复用几何 session，可跳过 SavePpcf
         QString jp = m_jsonPathEdit->text().trimmed();
         QString ppcf = jp.endsWith(".json") ? jp.left(jp.size() - 5) + ".ppcf" : (jp.endsWith(".ppcf") ? jp : jp + ".ppcf");
         params["ppcfPath"] = ppcf.toStdString();
-    } else if (cmd == "SaveGeometryPpcf") {
-        params["sessionId"] = m_sessionIdEdit->text().trimmed().toStdString();
-        QString jp = m_jsonPathEdit->text().trimmed();
-        QString ppcf = jp.endsWith(".json") ? jp.left(jp.size() - 5) + ".ppcf" : (jp.endsWith(".ppcf") ? jp : jp + ".ppcf");
-        params["ppcfPath"] = ppcf.toStdString();
-    } else if (cmd == "SaveMeshPpcf") {
-        QString ppcf = m_ppcfPathEdit->text().trimmed();
-        if (ppcf.isEmpty()) {
-            QString jp = m_jsonPathEdit->text().trimmed();
-            ppcf = jp.endsWith(".json") ? jp.left(jp.size() - 5) + ".ppcf" : (jp.endsWith(".ppcf") ? jp : jp + ".ppcf");
-        }
-        params["ppcfPath"] = ppcf.toStdString();
+    } else if (cmd == "SavePpcf") {
         QString sp = m_savePathEdit->text().trimmed();
+        if (sp.isEmpty()) {
+            QString jp = m_jsonPathEdit->text().trimmed();
+            sp = jp.endsWith(".json") ? jp.left(jp.size() - 5) + ".ppcf" : (jp.endsWith(".ppcf") ? jp : jp + ".ppcf");
+        }
         if (!sp.isEmpty()) params["savePath"] = sp.toStdString();
     } else if (cmd == "CloseSession") {
         params["sessionId"] = m_sessionIdEdit->text().trimmed().toStdString();
@@ -222,6 +221,16 @@ void MainWindow::onSend() {
             }
         }
         if (!ppcf.isEmpty()) params["ppcfPath"] = ppcf.toStdString();
+    } else if (cmd == "ImportPpcf") {
+        QString ppcf = m_ppcfPathEdit->text().trimmed();
+        if (ppcf.isEmpty()) {
+            QString jp = m_jsonPathEdit->text().trimmed();
+            if (!jp.isEmpty()) {
+                ppcf = jp.endsWith(".json") ? jp.left(jp.size() - 5) + ".ppcf" : (jp.endsWith(".ppcf") ? jp : jp + ".ppcf");
+            }
+        }
+        if (!ppcf.isEmpty()) params["ppcfPath"] = ppcf.toStdString();
+        params["importMode"] = m_importModeCombo->currentText().toStdString();
     } else if (cmd == "SetMeshSize" || cmd == "SetVolumeSize") {
         params["width"] = 800;
         params["height"] = 600;

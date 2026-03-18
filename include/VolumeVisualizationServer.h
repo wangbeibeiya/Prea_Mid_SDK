@@ -66,6 +66,11 @@ class vtkRenderWindowInteractor;
 void SetVolumeRenderSession(vtkRenderWindow* window, vtkRenderer* renderer,
                             vtkRenderWindowInteractor* interactor);
 
+/**
+ * @brief 窗口关闭时清除体渲染会话，确保再次 ShowGeometry 时 GetVolumeWindowHandle 返回最新句柄
+ */
+void ClearVolumeRenderSession();
+
 // 前向声明 vtkVolume
 class vtkVolume;
 
