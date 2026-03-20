@@ -186,7 +186,7 @@ bool VolumeProcessor::executeGeometryProcessing(const ProcessOptions& options)
 	return allSuccess;
 }
 
-bool VolumeProcessor::executeGeometryMatching(ProjectModelData* modelData)
+bool VolumeProcessor::executeGeometryMatching(ProjectModelData* modelData, bool verboseLog)
 {
 	if (!m_geometryProcessor)
 	{
@@ -204,7 +204,7 @@ bool VolumeProcessor::executeGeometryMatching(ProjectModelData* modelData)
 
 	std::unordered_map<std::string, std::vector<std::string>> volumeFaceGroupsMap;
 	m_lastUnmatchedVolumeNames.clear();
-	if (!m_geometryProcessor->analyzeVolumes(modelData, m_defaultOptions.repairTolerance, &m_geometryModel, &volumeFaceGroupsMap, &m_lastUnmatchedVolumeNames))
+	if (!m_geometryProcessor->analyzeVolumes(modelData, m_defaultOptions.repairTolerance, &m_geometryModel, &volumeFaceGroupsMap, &m_lastUnmatchedVolumeNames, verboseLog))
 	{
 		setError("几何识别匹配失败");
 		return false;

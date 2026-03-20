@@ -64,7 +64,8 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
                                       double tolerance,
                                       GeometryModel* geometryModel,
                                       std::unordered_map<std::string, std::vector<std::string>>* volumeFaceGroupsMap,
-                                      std::vector<std::string>* unmatchedVolumeNames)
+                                      std::vector<std::string>* unmatchedVolumeNames,
+                                      bool verboseLog)
 {
 	// 统计信息
 	MatchStatistics stats;
@@ -149,7 +150,7 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 				if (!group) continue;
 
 				char* group_name = group->getName();
-				createFaceGroupsInGroup(group, group_name ? group_name : "未命名", modelData, tolerance, &matchedFacesBySet);
+				createFaceGroupsInGroup(group, group_name ? group_name : "未命名", modelData, tolerance, &matchedFacesBySet, verboseLog);
 			}
 		}
 
@@ -233,16 +234,18 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 		printProgress("开始分析体和面...");
 		stats.totalVolumes = volumes_num;
 		
-		// 优化2：减少日志输出，只在开始时输出一次分隔符
-		if (m_logger && volumes_num <= 10) // 只有体数量少时才输出详细分隔符
+		if (m_logger && verboseLog)
 		{
 			m_logger->logOutputLine("\n======== 开始分析 " + std::to_string(volumes_num) + " 个体对象 ========");
+		}
+		if (m_logger && verboseLog && modelData && !jsonSolids.empty())
+		{
+			m_logger->logOutputLine("开始体匹配阶段：将 " + std::to_string(volumes_num) + " 个几何体与 " + std::to_string(jsonSolids.size()) + " 个 JSON 体进行包围盒对比");
 		}
 		
 		for (int i = 0; i < volumes_num; i++)
 		{
-			// 优化2：减少日志输出
-			if (m_logger && volumes_num <= 10)
+			if (m_logger && verboseLog)
 			{
 				m_logger->logOutputLine("\n--------------------------");
 			}
@@ -303,22 +306,22 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 				volumeBBox.center = Point3D((min_x + max_x) / 2.0, (min_y + max_y) / 2.0, (min_z + max_z) / 2.0);
 				volumeBBox.size = Point3D(max_x - min_x, max_y - min_y, max_z - min_z);
 
-				// 优化2：减少日志输出，只在体数量少或匹配成功时输出详细信息
-				if (m_logger && (volumes_num <= 10 || modelData))
+				if (m_logger && verboseLog)
 				{
 					m_logger->logOutputLine("体对象 #" + std::to_string(i + 1) + " (ID: " + std::to_string(vol_id) + ", 名称: " + (vol_name ? std::string(vol_name) : "未命名") + ")");
-					if (volumes_num <= 5) // 只有体数量很少时才输出详细包围盒信息
-					{
-						m_logger->logOutputLine("  包围盒信息:");
-						m_logger->logOutputLine("    中心点(Center): (" + std::to_string(volumeBBox.center.x) + ", " + std::to_string(volumeBBox.center.y) + ", " + std::to_string(volumeBBox.center.z) + ")");
-						m_logger->logOutputLine("    尺寸(Size): " + std::to_string(volumeBBox.size.x) + " × " + std::to_string(volumeBBox.size.y) + " × " + std::to_string(volumeBBox.size.z));
-						m_logger->logOutputLine("    边界范围: [" + std::to_string(min_x) + "~" + std::to_string(max_x) + ", " + std::to_string(min_y) + "~" + std::to_string(max_y) + ", " + std::to_string(min_z) + "~" + std::to_string(max_z) + "]");
-					}
+					m_logger->logOutputLine("  包围盒信息:");
+					m_logger->logOutputLine("    中心点(Center): (" + std::to_string(volumeBBox.center.x) + ", " + std::to_string(volumeBBox.center.y) + ", " + std::to_string(volumeBBox.center.z) + ")");
+					m_logger->logOutputLine("    尺寸(Size): " + std::to_string(volumeBBox.size.x) + " × " + std::to_string(volumeBBox.size.y) + " × " + std::to_string(volumeBBox.size.z));
+					m_logger->logOutputLine("    边界范围: [" + std::to_string(min_x) + "~" + std::to_string(max_x) + ", " + std::to_string(min_y) + "~" + std::to_string(max_y) + ", " + std::to_string(min_z) + "~" + std::to_string(max_z) + "]");
 				}
 
 				// 根据包围盒与JSON数据中的体去匹配，匹配成功改名字
 				if (modelData && !jsonSolids.empty())
 				{
+					if (m_logger && verboseLog)
+					{
+						m_logger->logOutputLine("  [体匹配] 正在与 " + std::to_string(jsonSolids.size()) + " 个 JSON 体进行包围盒对比...");
+					}
 					std::string currentName = vol_name ? std::string(vol_name) : "";
 					std::string matchedName;
 					bool foundMatch = false;
@@ -334,8 +337,7 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 							matchedName = candidateName;
 							foundMatch = true;
 							stats.matchedVolumes++;
-							// 优化2：减少日志输出，只在匹配成功时输出
-							if (m_logger)
+							if (m_logger && verboseLog)
 							{
 								m_logger->logOutputLine("  ✓ 匹配成功: \"" + matchedName + "\"");
 							}
@@ -364,7 +366,7 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 												if (otherName && std::string(otherName) == matchedName)
 												{
 													nameConflict = true;
-													if (m_logger)
+													if (m_logger && verboseLog)
 													{
 														m_logger->logOutputLine("  ⚠ 警告: 目标名称已存在，跳过重命名");
 													}
@@ -378,7 +380,7 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 									{
 										if (m_geometryAPI->renameVolume(currentName, matchedName))
 										{
-											if (m_logger)
+											if (m_logger && verboseLog)
 											{
 												m_logger->logOutputLine("  ✓ 重命名成功: \"" + currentName + "\" -> \"" + matchedName + "\"");
 											}
@@ -387,7 +389,7 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 										}
 										else
 										{
-											if (m_logger)
+											if (m_logger && verboseLog)
 											{
 												m_logger->logOutputLine("  ✗ 重命名失败: " + m_geometryAPI->getLastError());
 											}
@@ -399,7 +401,7 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 									std::string tempName = "Volume_" + std::to_string(vol_id);
 									if (m_geometryAPI->renameVolume(tempName, matchedName))
 									{
-										if (m_logger)
+										if (m_logger && verboseLog)
 										{
 											m_logger->logOutputLine("  ✓ 重命名成功: \"" + tempName + "\" -> \"" + matchedName + "\"");
 										}
@@ -408,7 +410,7 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 									}
 									else
 									{
-										if (m_logger)
+										if (m_logger && verboseLog)
 										{
 											m_logger->logOutputLine("  ✗ 重命名失败: " + m_geometryAPI->getLastError());
 										}
@@ -419,13 +421,34 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 						}
 					}
 
-					// 优化2：减少日志输出，只在体数量少时输出未匹配信息
 					if (!foundMatch)
 					{
 						std::string unmatchedName = currentName.empty() ? ("Volume_" + std::to_string(vol_id)) : currentName;
 						stats.unmatchedVolumeNames.push_back(unmatchedName);
-						if (m_logger && volumes_num <= 10)
-							m_logger->logOutputLine("  ✗ 未找到匹配的JSON体");
+						if (m_logger && verboseLog)
+						{
+							m_logger->logOutputLine("  ✗ 未找到匹配的JSON体（包围盒对比）");
+							// 包围盒调试信息：找出偏差最小的 JSON 体
+							double bestMaxDev = 1e300;
+							size_t bestIdx = 0;
+							for (size_t k = 0; k < jsonSolids.size(); ++k)
+							{
+								const BoundingBox3D& jb = jsonSolids[k].first;
+								double dxMin = std::abs(volumeBBox.minPoint.x - jb.minPoint.x);
+								double dyMin = std::abs(volumeBBox.minPoint.y - jb.minPoint.y);
+								double dzMin = std::abs(volumeBBox.minPoint.z - jb.minPoint.z);
+								double dxMax = std::abs(volumeBBox.maxPoint.x - jb.maxPoint.x);
+								double dyMax = std::abs(volumeBBox.maxPoint.y - jb.maxPoint.y);
+								double dzMax = std::abs(volumeBBox.maxPoint.z - jb.maxPoint.z);
+								double maxDev = std::max(std::max(std::max(dxMin, dyMin), std::max(dzMin, dxMax)), std::max(dyMax, dzMax));
+								if (maxDev < bestMaxDev) { bestMaxDev = maxDev; bestIdx = k; }
+							}
+							const auto& bestJson = jsonSolids[bestIdx];
+							m_logger->logOutputLine("    [调试] 容差: " + std::to_string(tolerance) + ", 最近JSON体: \"" + bestJson.second + "\"");
+							m_logger->logOutputLine("    [调试] 几何体 Min(" + std::to_string(volumeBBox.minPoint.x) + "," + std::to_string(volumeBBox.minPoint.y) + "," + std::to_string(volumeBBox.minPoint.z) + ") Max(" + std::to_string(volumeBBox.maxPoint.x) + "," + std::to_string(volumeBBox.maxPoint.y) + "," + std::to_string(volumeBBox.maxPoint.z) + ")");
+							m_logger->logOutputLine("    [调试] JSON体 Min(" + std::to_string(bestJson.first.minPoint.x) + "," + std::to_string(bestJson.first.minPoint.y) + "," + std::to_string(bestJson.first.minPoint.z) + ") Max(" + std::to_string(bestJson.first.maxPoint.x) + "," + std::to_string(bestJson.first.maxPoint.y) + "," + std::to_string(bestJson.first.maxPoint.z) + ")");
+							m_logger->logOutputLine("    [调试] 最大偏差: " + std::to_string(bestMaxDev));
+						}
 					}
 				}
 			}
@@ -441,12 +464,11 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 				char* group_name = group->getName();
 				int group_id = group->getId();
 
-				// 优化2：减少日志输出，只在组数量少时输出
-				if (m_logger && groups_num <= 10)
+				if (m_logger && verboseLog)
 				{
 					m_logger->logOutputLine("  分析组: " + (group_name ? std::string(group_name) : "未命名") + " (ID: " + std::to_string(group_id) + ")");
 				}
-				std::vector<std::string> faceGroupNames = analyzeFacesInGroupAndGetNames(group, j + 1, group_name ? group_name : "未命名", modelData, tolerance, &stats);
+				std::vector<std::string> faceGroupNames = analyzeFacesInGroupAndGetNames(group, j + 1, group_name ? group_name : "未命名", modelData, tolerance, &stats, verboseLog);
 				volumeFaceGroupNames.insert(volumeFaceGroupNames.end(), faceGroupNames.begin(), faceGroupNames.end());
 			}
 			
@@ -475,8 +497,7 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 				if (geometryVolume)
 				{
 					geometryModel->addVolume(geometryVolume);
-					// 优化2：减少日志输出
-					if (m_logger && volumes_num <= 10)
+						if (m_logger && verboseLog)
 					{
 						m_logger->logOutputLine("  ✓ 几何体数据结构已创建，包含 " + std::to_string(geometryVolume->getFaceCount()) + " 个面");
 					}
@@ -543,6 +564,18 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 					const auto& rename = stats.volumeRenames[i];
 					std::ostringstream oss;
 					oss << "    [" << std::setw(2) << (i + 1) << "] \"" << rename.first << "\" → \"" << rename.second << "\"";
+					m_logger->logOutputLine(oss.str());
+				}
+			}
+			
+			if (!stats.unmatchedVolumeNames.empty())
+			{
+				m_logger->logOutputLine("");
+				m_logger->logOutputLine("  ✗ 未匹配的体列表 (" + std::to_string(stats.unmatchedVolumeNames.size()) + " 个体):");
+				for (size_t i = 0; i < stats.unmatchedVolumeNames.size(); i++)
+				{
+					std::ostringstream oss;
+					oss << "    [" << std::setw(2) << (i + 1) << "] \"" << stats.unmatchedVolumeNames[i] << "\"";
 					m_logger->logOutputLine(oss.str());
 				}
 			}
@@ -619,7 +652,8 @@ void GeometryProcessor::createFaceGroupsInGroup(PREPRO_BASE_NAMESPACE::PFGroup* 
                                                  const std::string& groupName, 
                                                  const ProjectModelData* modelData, 
                                                  double tolerance,
-                                                 std::unordered_map<std::string, std::vector<unsigned int>>* matchedFacesBySet)
+                                                 std::unordered_map<std::string, std::vector<unsigned int>>* matchedFacesBySet,
+                                                 bool verboseLog)
 {
 	if (!group)
 	{
@@ -639,8 +673,7 @@ void GeometryProcessor::createFaceGroupsInGroup(PREPRO_BASE_NAMESPACE::PFGroup* 
 		// 按ID分组元素
 		std::unordered_map<unsigned int, std::vector<PREPRO_BASE_NAMESPACE::PFElement*>> faceElementsMap = groupElementsById(elements, elementSize);
 
-		// 优化2：减少日志输出
-		if (m_logger && faceElementsMap.size() <= 20)
+		if (m_logger && verboseLog)
 		{
 			m_logger->logOutputLine("      识别出的真实面数量（按ID分组）: " + std::to_string(faceElementsMap.size()));
 		}
@@ -666,14 +699,14 @@ void GeometryProcessor::createFaceGroupsInGroup(PREPRO_BASE_NAMESPACE::PFGroup* 
 			else
 			{
 				failedCount++;
-				if (m_logger)
+				if (m_logger && verboseLog)
 				{
 					m_logger->logOutputLine("  ✗ 创建面组失败: " + newGroupName + " (" + m_geometryAPI->getLastError() + ")");
 				}
 			}
 		}
 		
-		if (m_logger && (createdCount > 0 || failedCount > 0))
+		if (m_logger && verboseLog && (createdCount > 0 || failedCount > 0))
 		{
 			m_logger->logOutputLine("  创建面组统计: 成功 " + std::to_string(createdCount) + " 个, 失败 " + std::to_string(failedCount) + " 个");
 		}
@@ -696,8 +729,8 @@ void GeometryProcessor::analyzeRealFacesInGroup(PREPRO_BASE_NAMESPACE::PFGroup* 
                                                 std::unordered_map<std::string, std::vector<unsigned int>>* matchedFacesBySet,
                                                 std::unordered_map<std::string, std::vector<std::string>>* volumeFaceGroupsMap)
 {
-	// 调用完整实现函数
-	analyzeRealFacesInGroupImpl(group, nullptr, groupIndex, groupName, modelData, tolerance, nullptr, nullptr, geometryModel, matchedFacesBySet, volumeFaceGroupsMap);
+	// 调用完整实现函数（analyzeRealFacesInGroup 无 verboseLog 参数，默认 false）
+	analyzeRealFacesInGroupImpl(group, nullptr, groupIndex, groupName, modelData, tolerance, nullptr, nullptr, geometryModel, matchedFacesBySet, volumeFaceGroupsMap, false);
 }
 
 void GeometryProcessor::analyzeRealFacesInGroupImpl(PREPRO_BASE_NAMESPACE::PFGroup* group, 
@@ -710,7 +743,8 @@ void GeometryProcessor::analyzeRealFacesInGroupImpl(PREPRO_BASE_NAMESPACE::PFGro
                                                     std::vector<std::string>* faceGroupNames,
                                                     GeometryModel* geometryModel,
                                                     std::unordered_map<std::string, std::vector<unsigned int>>* matchedFacesBySet,
-                                                    std::unordered_map<std::string, std::vector<std::string>>* volumeFaceGroupsMap)
+                                                    std::unordered_map<std::string, std::vector<std::string>>* volumeFaceGroupsMap,
+                                                    bool verboseLog)
 {
 	if (!group)
 	{
@@ -824,7 +858,7 @@ void GeometryProcessor::analyzeRealFacesInGroupImpl(PREPRO_BASE_NAMESPACE::PFGro
 			// 优化：如果所有JSON面集合的所有面都已匹配完成，提前退出
 			if (modelData && !faceSetIndex.empty() && allSetsMatched())
 			{
-				if (m_logger)
+				if (m_logger && verboseLog)
 				{
 					m_logger->logOutputLine("  所有JSON面集合的所有面都已匹配完成，提前退出匹配循环");
 				}
@@ -868,10 +902,9 @@ void GeometryProcessor::analyzeRealFacesInGroupImpl(PREPRO_BASE_NAMESPACE::PFGro
 			}
 
 			// 计算该真实面的属性（使用已收集的顶点数据，避免重复收集）
-			// 优化2：减少日志输出，只在必要时输出
-			if (m_logger && faceElementsMap.size() <= 10) // 只有面数量少时才输出详细日志
+			if (m_logger && verboseLog)
 			{
-				calculateRealFaceProperties(faceElements, faceId, vertexGroup);
+				calculateRealFaceProperties(faceElements, faceId, vertexGroup, verboseLog);
 			}
 
 			// 优化3：使用预处理索引进行快速匹配
@@ -981,7 +1014,7 @@ void GeometryProcessor::analyzeRealFacesInGroupImpl(PREPRO_BASE_NAMESPACE::PFGro
 		}
 
 		// 输出匹配统计，并检查每个集合是否所有面都被匹配
-		if (m_logger)
+		if (m_logger && verboseLog)
 		{
 			m_logger->logOutputLine("  面匹配统计:");
 			for (const auto& faceSet : faceSets)
@@ -1396,11 +1429,11 @@ std::shared_ptr<GeometryVolume> GeometryProcessor::createGeometryVolume(
 	}
 }
 
-void GeometryProcessor::calculateRealFaceProperties(const std::vector<PREPRO_BASE_NAMESPACE::PFElement*>& faceElements, int faceId, PREPRO_BASE_NAMESPACE::PFGroup* group)
+void GeometryProcessor::calculateRealFaceProperties(const std::vector<PREPRO_BASE_NAMESPACE::PFElement*>& faceElements, int faceId, PREPRO_BASE_NAMESPACE::PFGroup* group, bool verboseLog)
 {
 	if (faceElements.empty())
 	{
-		if (m_logger)
+		if (m_logger && verboseLog)
 		{
 			m_logger->logOutputLine("          警告: 该面没有元素");
 		}
@@ -1410,7 +1443,7 @@ void GeometryProcessor::calculateRealFaceProperties(const std::vector<PREPRO_BAS
 	try
 	{
 		std::set<unsigned int> uniqueVertexIndices = collectUniqueVertexIndices(faceElements);
-		if (m_logger)
+		if (m_logger && verboseLog)
 		{
 			m_logger->logOutputLine("          收集到的唯一顶点索引数量: " + std::to_string(uniqueVertexIndices.size()));
 		}
@@ -1418,7 +1451,7 @@ void GeometryProcessor::calculateRealFaceProperties(const std::vector<PREPRO_BAS
 		std::vector<std::vector<double>> faceVertices;
 		if (!getVerticesFromGroup(uniqueVertexIndices, group, faceVertices))
 		{
-			if (m_logger)
+			if (m_logger && verboseLog)
 			{
 				m_logger->logOutputLine("          警告: 无法获取该面的顶点数据");
 				if (group)
@@ -1434,7 +1467,7 @@ void GeometryProcessor::calculateRealFaceProperties(const std::vector<PREPRO_BAS
 			return;
 		}
 
-		if (m_logger)
+		if (m_logger && verboseLog)
 		{
 			m_logger->logOutputLine("          顶点数量: " + std::to_string(faceVertices.size()));
 		}
@@ -1460,7 +1493,7 @@ void GeometryProcessor::calculateRealFaceProperties(const std::vector<PREPRO_BAS
 		double size_y = max_y - min_y;
 		double size_z = max_z - min_z;
 
-		if (m_logger)
+		if (m_logger && verboseLog)
 		{
 			m_logger->logOutputLine("          包围盒中心: (" + std::to_string(center_x) + ", " + std::to_string(center_y) + ", " + std::to_string(center_z) + ")");
 			m_logger->logOutputLine("          包围盒尺寸: (" + std::to_string(size_x) + ", " + std::to_string(size_y) + ", " + std::to_string(size_z) + ")");
@@ -1469,14 +1502,14 @@ void GeometryProcessor::calculateRealFaceProperties(const std::vector<PREPRO_BAS
 	}
 	catch (const std::exception& e)
 	{
-		if (m_logger)
+		if (m_logger && verboseLog)
 		{
 			m_logger->logOutputLine("          错误: 计算面属性时发生异常: " + std::string(e.what()));
 		}
 	}
 }
 
-std::vector<std::string> GeometryProcessor::analyzeFacesInGroupAndGetNames(PREPRO_BASE_NAMESPACE::PFGroup* group, int groupIndex, const std::string& groupName, const ProjectModelData* modelData, double tolerance, void* statsPtr)
+std::vector<std::string> GeometryProcessor::analyzeFacesInGroupAndGetNames(PREPRO_BASE_NAMESPACE::PFGroup* group, int groupIndex, const std::string& groupName, const ProjectModelData* modelData, double tolerance, void* statsPtr, bool verboseLog)
 {
 	std::vector<std::string> faceGroupNames;
 	if (!group)
@@ -1484,7 +1517,7 @@ std::vector<std::string> GeometryProcessor::analyzeFacesInGroupAndGetNames(PREPR
 		return faceGroupNames;
 	}
 	
-	analyzeRealFacesInGroupImpl(group, nullptr, groupIndex, groupName, modelData, tolerance, statsPtr, &faceGroupNames, nullptr, nullptr, nullptr);
+	analyzeRealFacesInGroupImpl(group, nullptr, groupIndex, groupName, modelData, tolerance, statsPtr, &faceGroupNames, nullptr, nullptr, nullptr, verboseLog);
 	
 	return faceGroupNames;
 }

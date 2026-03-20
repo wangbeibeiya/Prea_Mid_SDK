@@ -38,13 +38,16 @@ public:
      * @param tolerance 包围盒匹配容差，默认 1e-6
      * @param geometryModel 输出的几何模型数据
      * @param volumeFaceGroupsMap 输出的体名称和对应的面组名称映射
+     * @param unmatchedVolumeNames 输出的未匹配体名称列表
+     * @param verboseLog 是否输出详细日志（体/面匹配过程、包围盒调试等），默认 false
      * @return 是否成功处理
      */
     bool analyzeVolumes(ProjectModelData* modelData = nullptr, 
                        double tolerance = 1e-6,
                        GeometryModel* geometryModel = nullptr,
                        std::unordered_map<std::string, std::vector<std::string>>* volumeFaceGroupsMap = nullptr,
-                       std::vector<std::string>* unmatchedVolumeNames = nullptr);
+                       std::vector<std::string>* unmatchedVolumeNames = nullptr,
+                       bool verboseLog = false);
     
     /**
      * @brief 设置进度回调函数
@@ -102,7 +105,8 @@ private:
                                      std::vector<std::string>* faceGroupNames,
                                      GeometryModel* geometryModel,
                                      std::unordered_map<std::string, std::vector<unsigned int>>* matchedFacesBySet,
-                                     std::unordered_map<std::string, std::vector<std::string>>* volumeFaceGroupsMap);
+                                     std::unordered_map<std::string, std::vector<std::string>>* volumeFaceGroupsMap,
+                                     bool verboseLog = false);
     
     /**
      * @brief 在group中创建面组（按ID分组）
@@ -111,7 +115,8 @@ private:
                                  const std::string& groupName, 
                                  const ProjectModelData* modelData, 
                                  double tolerance,
-                                 std::unordered_map<std::string, std::vector<unsigned int>>* matchedFacesBySet);
+                                 std::unordered_map<std::string, std::vector<unsigned int>>* matchedFacesBySet,
+                                 bool verboseLog = false);
     
     /**
      * @brief 比较两个包围盒是否匹配
@@ -165,7 +170,8 @@ private:
     void calculateRealFaceProperties(
         const std::vector<class PREPRO_BASE_NAMESPACE::PFElement*>& faceElements, 
         int faceId, 
-        class PREPRO_BASE_NAMESPACE::PFGroup* group);
+        class PREPRO_BASE_NAMESPACE::PFGroup* group,
+        bool verboseLog = false);
     
     /**
      * @brief 分析面组并获取面组名称列表
@@ -176,7 +182,8 @@ private:
         const std::string& groupName, 
         const ProjectModelData* modelData, 
         double tolerance, 
-        void* statsPtr);
+        void* statsPtr,
+        bool verboseLog = false);
     
     /**
      * @brief 计算体的重心

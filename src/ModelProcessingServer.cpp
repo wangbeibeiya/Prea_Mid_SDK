@@ -262,7 +262,8 @@ json ModelProcessingServer::handleExecuteGeometryMatching(const json& params)
         return response;
     }
 
-    if (!processor->executeGeometryMatching(&model))
+    bool verboseLog = params.value("verboseLog", false);
+    if (!processor->executeGeometryMatching(&model, verboseLog))
     {
         response["success"] = false;
         response["error"] = processor->getLastError();

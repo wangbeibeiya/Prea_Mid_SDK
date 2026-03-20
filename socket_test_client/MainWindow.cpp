@@ -121,6 +121,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_client(new Sock
     m_importModeCombo->setMaximumWidth(90);
     m_importModeCombo->setToolTip("ImportPpcf 用: geometry=openDocument, mesh=importMesh");
     cmdRow->addWidget(m_importModeCombo);
+    m_verboseLogCheck = new QCheckBox("verboseLog (ExecuteGeometryMatching 详细日志)");
+    m_verboseLogCheck->setToolTip("勾选后输出体/面匹配过程、包围盒调试等详细日志");
+    cmdRow->addWidget(m_verboseLogCheck);
     cmdRow->addStretch();
     cmdLayout->addLayout(cmdRow);
 
@@ -181,6 +184,8 @@ void MainWindow::onSend() {
     } else if (cmd == "ExecuteGeometryMatching") {
         params["sessionId"] = m_sessionIdEdit->text().trimmed().toStdString();
         params["jsonPath"] = m_jsonPathEdit->text().trimmed().toStdString();
+        if (m_verboseLogCheck->isChecked())
+            params["verboseLog"] = true;
     } else if (cmd == "ExecuteMeshGeneration") {
         params["jsonPath"] = m_jsonPathEdit->text().trimmed().toStdString();
         QString sid = m_sessionIdEdit->text().trimmed();

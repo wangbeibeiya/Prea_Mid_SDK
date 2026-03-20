@@ -6,6 +6,7 @@
 #include <QTextEdit>
 #include <QPushButton>
 #include <QComboBox>
+#include <QCheckBox>
 #include "SearchableComboBox.h"
 
 #include <QSpinBox>
@@ -44,6 +45,7 @@ private:
     QComboBox* m_representationCombo;
     QComboBox* m_enableCombo;
     QComboBox* m_importModeCombo;
+    QCheckBox* m_verboseLogCheck;
     QPushButton* m_sendBtn;
     QTextEdit* m_responseEdit;
 };

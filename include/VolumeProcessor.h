@@ -73,9 +73,10 @@ public:
     /**
      * @brief 3. 几何识别匹配（在已有顶层数据上执行 analyzeVolumes 匹配重命名）
      * @param modelData ProjectModelData 用于 SetList 匹配
+     * @param verboseLog 是否输出详细日志（体/面匹配过程、包围盒等），默认 false
      * @return 是否成功
      */
-    bool executeGeometryMatching(class ProjectModelData* modelData);
+    bool executeGeometryMatching(class ProjectModelData* modelData, bool verboseLog = false);
 
     /**
      * @brief 刷新顶层数据（几何识别匹配创建新 group 后需调用，以更新体/面组数据）
