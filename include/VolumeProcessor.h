@@ -85,6 +85,12 @@ public:
     bool refreshGeometryData();
 
     /**
+     * @brief 删除体之后调用：更新会话内重命名映射并 refreshGeometryData（不调用 findVolumes，避免缝合出新体）
+     * @param deletedVolumeName DeleteVolumeByName 传入的名称（新名或 SDK 旧名均可，用于移除对应映射项）
+     */
+    void onVolumeDeletedByName(const std::string& deletedVolumeName);
+
+    /**
      * @brief 保存几何 ppcf 到 modelData 指定的路径
      * @param modelData 用于获取 WorkingDirectory、ProjectName
      * @return 是否成功
@@ -198,7 +204,19 @@ public:
      */
     const std::vector<std::string>& getLastUnmatchedVolumeNames() const { return m_lastUnmatchedVolumeNames; }
 
+    /**
+     * @brief 最近一次几何匹配成功的体重命名映射（SDK 枚举体名可能仍为旧名时，用于对外展示新名）
+     */
+    const std::vector<std::pair<std::string, std::string>>& getSessionVolumeRenames() const { return m_sessionVolumeRenames; }
+
+    /**
+     * @brief 供 GetVolumeListNames：几何匹配后会维护显示体名缓存；删除体后 getAllData 枚举常与 ppcf 不一致，优先返回缓存以与保存文件一致
+     */
+    bool getVolumeListDisplayNames(std::vector<std::string>& out) const;
+
 private:
+    void rebuildDisplayVolumeNameCache();
+
     std::unique_ptr<GeometryAPI> m_geometryAPI;   ///< 几何API实例
     ProcessOptions m_defaultOptions;              ///< 默认处理选项
     std::string m_lastError;                      ///< 最后的错误信息
@@ -218,6 +236,12 @@ private:
     bool m_outputGroupJson = false;               ///< 是否输出group.json文件（默认false）
     
     std::vector<std::string> m_lastUnmatchedVolumeNames;  ///< 最近一次几何匹配中未匹配成功的体名称
+
+    /// 最近一次几何匹配写入的体名映射（与当次 ProjectModelData::VolumeRenameMap 一致）
+    std::vector<std::pair<std::string, std::string>> m_sessionVolumeRenames;
+
+    /// 匹配完成后的对外体名列表；DeleteVolumeByName 时从缓存剔除，不依赖删除后 SDK 枚举
+    std::vector<std::string> m_cachedDisplayVolumeNames;
 
     // 统计信息
     int m_processedGeometryCount;                 ///< 已处理的几何文件数

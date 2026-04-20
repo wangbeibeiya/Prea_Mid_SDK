@@ -272,6 +272,11 @@ public:
      */
     bool loadVolumeRenameMapFromCache(const std::string& cacheDir);
 
+    /**
+     * @brief 几何匹配产生的体名称映射（原名称 -> 新名称），与缓存 VolumeRenameMap.json 一致
+     */
+    const std::vector<std::pair<std::string, std::string>>& getVolumeRenameMap() const { return VolumeRenameMap; }
+
 private:
     std::optional<std::string> Name;
     std::optional<std::string> Description;

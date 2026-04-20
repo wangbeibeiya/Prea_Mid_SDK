@@ -7,8 +7,11 @@
 #include <cmath>
 #include <fstream>
 #include <set>
+#include <unordered_set>
+#include <functional>
 #include <sstream>
 #include <iomanip>
+#include <chrono>
 #include <filesystem>
 #include <json.hpp>
 using json = nlohmann::json;
@@ -26,6 +29,222 @@ namespace {
 		int matchedFaces = 0;
 		std::unordered_map<std::string, int> faceMatchesBySet;
 	};
+
+	/** SetList 中 Face 集合里各 FaceItem.Id（与 ModelTree / CAD 体 Id 一致），仅对这些体做按真实 ID 拆面。 */
+	static std::unordered_set<int> collectCadVolumeIdsFromFaceItemsInSetList(const ProjectModelData* modelData)
+	{
+		std::unordered_set<int> out;
+		if (!modelData)
+			return out;
+		for (const auto& setItem : modelData->GetSetList())
+		{
+			if (!setItem || !setItem->SetType.has_value() || setItem->SetType.value() != "Face")
+				continue;
+			auto faceSet = std::dynamic_pointer_cast<SetFaceItem>(setItem);
+			if (!faceSet)
+				continue;
+			for (const auto& fi : faceSet->Items)
+				out.insert(fi.Id);
+		}
+		return out;
+	}
+
+	/** 未拆面时：按顶点 AABB 与 JSON Solid 包围盒匹配并对体 renameVolume。 */
+	static void runVolumeSolidBboxMatchPass(
+		GeometryAPI* geometryAPI,
+		Logger* m_logger,
+		PREPRO_BASE_NAMESPACE::PFVolume** volumes,
+		int volumes_num,
+		ProjectModelData* modelData,
+		const std::vector<std::pair<BoundingBox3D, std::string>>& jsonSolids,
+		double tolerance,
+		MatchStatistics& stats,
+		bool verboseLog,
+		const std::function<bool(const BoundingBox3D&, const BoundingBox3D&, double)>& matchBbox)
+	{
+		for (int i = 0; i < volumes_num; i++)
+		{
+			if (m_logger && verboseLog)
+				m_logger->logOutputLine("\n--------------------------");
+
+			PREPRO_BASE_NAMESPACE::PFVolume* vol = volumes[i];
+			if (!vol)
+				continue;
+			char* vol_name = vol->getName();
+			int vol_id = vol->getId();
+
+			int groups_num = vol->getGroupSize();
+			PREPRO_BASE_NAMESPACE::PFGroup** groups = vol->getGroups();
+
+			bool hasVertices = false;
+			double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0, min_z = 0.0, max_z = 0.0;
+			bool firstVertex = true;
+
+			for (int j = 0; j < groups_num; j++)
+			{
+				PREPRO_BASE_NAMESPACE::PFGroup* group = groups[j];
+				if (!group) continue;
+
+				size_t vertex_count = group->getVertexSize();
+				double* vertexs = group->getVertexes();
+				if (!vertexs) continue;
+
+				for (size_t k = 0; k < vertex_count * 3; k += 3)
+				{
+					double x = vertexs[k];
+					double y = vertexs[k + 1];
+					double z = vertexs[k + 2];
+
+					if (firstVertex)
+					{
+						min_x = max_x = x;
+						min_y = max_y = y;
+						min_z = max_z = z;
+						firstVertex = false;
+						hasVertices = true;
+					}
+					else
+					{
+						min_x = std::min(min_x, x);
+						max_x = std::max(max_x, x);
+						min_y = std::min(min_y, y);
+						max_y = std::max(max_y, y);
+						min_z = std::min(min_z, z);
+						max_z = std::max(max_z, z);
+					}
+				}
+			}
+
+			BoundingBox3D volumeBBox;
+			if (!hasVertices)
+				continue;
+
+			volumeBBox.minPoint = Point3D(min_x, min_y, min_z);
+			volumeBBox.maxPoint = Point3D(max_x, max_y, max_z);
+			volumeBBox.center = Point3D((min_x + max_x) / 2.0, (min_y + max_y) / 2.0, (min_z + max_z) / 2.0);
+			volumeBBox.size = Point3D(max_x - min_x, max_y - min_y, max_z - min_z);
+
+			if (m_logger && verboseLog)
+			{
+				m_logger->logOutputLine("体对象 #" + std::to_string(i + 1) + " (ID: " + std::to_string(vol_id) + ", 名称: " + (vol_name ? std::string(vol_name) : "未命名") + ")");
+				m_logger->logOutputLine("  包围盒信息:");
+				m_logger->logOutputLine("    中心点(Center): (" + std::to_string(volumeBBox.center.x) + ", " + std::to_string(volumeBBox.center.y) + ", " + std::to_string(volumeBBox.center.z) + ")");
+				m_logger->logOutputLine("    尺寸(Size): " + std::to_string(volumeBBox.size.x) + " × " + std::to_string(volumeBBox.size.y) + " × " + std::to_string(volumeBBox.size.z));
+				m_logger->logOutputLine("    边界范围: [" + std::to_string(min_x) + "~" + std::to_string(max_x) + ", " + std::to_string(min_y) + "~" + std::to_string(max_y) + ", " + std::to_string(min_z) + "~" + std::to_string(max_z) + "]");
+			}
+
+			if (!modelData || jsonSolids.empty())
+				continue;
+
+			if (m_logger && verboseLog)
+				m_logger->logOutputLine("  [体匹配] 正在与 " + std::to_string(jsonSolids.size()) + " 个 JSON 体进行包围盒对比...");
+
+			std::string currentName = vol_name ? std::string(vol_name) : "";
+			std::string matchedName;
+			bool foundMatch = false;
+
+			for (const auto& jsonSolid : jsonSolids)
+			{
+				const BoundingBox3D& jsonBBox = jsonSolid.first;
+				const std::string& candidateName = jsonSolid.second;
+
+				if (matchBbox(volumeBBox, jsonBBox, tolerance))
+				{
+					matchedName = candidateName;
+					foundMatch = true;
+					stats.matchedVolumes++;
+					if (m_logger && verboseLog)
+						m_logger->logOutputLine("  ✓ 匹配成功: \"" + matchedName + "\"");
+
+					if (currentName != matchedName)
+					{
+						if (!currentName.empty())
+						{
+							char* actualVolName = vol->getName();
+							std::string actualName = actualVolName ? std::string(actualVolName) : "";
+							if (actualName != currentName)
+								currentName = actualName;
+
+							bool nameConflict = false;
+							for (int k = 0; k < volumes_num; k++)
+							{
+								if (k != i)
+								{
+									PREPRO_BASE_NAMESPACE::PFVolume* otherVol = volumes[k];
+									if (otherVol)
+									{
+										char* otherName = otherVol->getName();
+										if (otherName && std::string(otherName) == matchedName)
+										{
+											nameConflict = true;
+											if (m_logger && verboseLog)
+												m_logger->logOutputLine("  ⚠ 警告: 目标名称已存在，跳过重命名");
+											break;
+										}
+									}
+								}
+							}
+
+							if (!nameConflict)
+							{
+								if (geometryAPI->renameVolume(currentName, matchedName))
+								{
+									if (m_logger && verboseLog)
+										m_logger->logOutputLine("  ✓ 重命名成功: \"" + currentName + "\" -> \"" + matchedName + "\"");
+									stats.renamedVolumes++;
+									stats.volumeRenames.push_back({ currentName, matchedName });
+								}
+								else if (m_logger && verboseLog)
+									m_logger->logOutputLine("  ✗ 重命名失败: " + geometryAPI->getLastError());
+							}
+						}
+						else
+						{
+							std::string tempName = "Volume_" + std::to_string(vol_id);
+							if (geometryAPI->renameVolume(tempName, matchedName))
+							{
+								if (m_logger && verboseLog)
+									m_logger->logOutputLine("  ✓ 重命名成功: \"" + tempName + "\" -> \"" + matchedName + "\"");
+								stats.renamedVolumes++;
+								stats.volumeRenames.push_back({ tempName, matchedName });
+							}
+							else if (m_logger && verboseLog)
+								m_logger->logOutputLine("  ✗ 重命名失败: " + geometryAPI->getLastError());
+						}
+					}
+				}
+			}
+
+			if (!foundMatch)
+			{
+				std::string unmatchedName = currentName.empty() ? ("Volume_" + std::to_string(vol_id)) : currentName;
+				stats.unmatchedVolumeNames.push_back(unmatchedName);
+				if (m_logger && verboseLog)
+				{
+					m_logger->logOutputLine("  ✗ 未找到匹配的JSON体（包围盒对比）");
+					double bestMaxDev = 1e300;
+					size_t bestIdx = 0;
+					for (size_t k = 0; k < jsonSolids.size(); ++k)
+					{
+						const BoundingBox3D& jb = jsonSolids[k].first;
+						double dxMin = std::abs(volumeBBox.minPoint.x - jb.minPoint.x);
+						double dyMin = std::abs(volumeBBox.minPoint.y - jb.minPoint.y);
+						double dzMin = std::abs(volumeBBox.minPoint.z - jb.minPoint.z);
+						double dxMax = std::abs(volumeBBox.maxPoint.x - jb.maxPoint.x);
+						double dyMax = std::abs(volumeBBox.maxPoint.y - jb.maxPoint.y);
+						double dzMax = std::abs(volumeBBox.maxPoint.z - jb.maxPoint.z);
+						double maxDev = std::max(std::max(std::max(dxMin, dyMin), std::max(dzMin, dxMax)), std::max(dyMax, dzMax));
+						if (maxDev < bestMaxDev) { bestMaxDev = maxDev; bestIdx = k; }
+					}
+					const auto& bestJson = jsonSolids[bestIdx];
+					m_logger->logOutputLine("    [调试] 容差: " + std::to_string(tolerance) + ", 最近JSON体: \"" + bestJson.second + "\"");
+					m_logger->logOutputLine("    [调试] 几何体 Min(" + std::to_string(volumeBBox.minPoint.x) + "," + std::to_string(volumeBBox.minPoint.y) + "," + std::to_string(volumeBBox.minPoint.z) + ") Max(" + std::to_string(volumeBBox.maxPoint.x) + "," + std::to_string(volumeBBox.maxPoint.y) + "," + std::to_string(volumeBBox.maxPoint.z) + ")");
+					m_logger->logOutputLine("    [调试] JSON体 Min(" + std::to_string(bestJson.first.minPoint.x) + "," + std::to_string(bestJson.first.minPoint.y) + "," + std::to_string(bestJson.first.minPoint.z) + ") Max(" + std::to_string(bestJson.first.maxPoint.x) + "," + std::to_string(bestJson.first.maxPoint.y) + "," + std::to_string(bestJson.first.maxPoint.z) + ")");
+					m_logger->logOutputLine("    [调试] 最大偏差: " + std::to_string(bestMaxDev));
+				}
+			}
+		}
+	}
 }
 
 GeometryProcessor::GeometryProcessor(GeometryAPI* geometryAPI, Logger* logger)
@@ -72,6 +291,7 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 
 	try
 	{
+		const auto geometryMatchingStart = std::chrono::high_resolution_clock::now();
 		printProgress("开始分析体对象信息...");
 
 		// 如果提供了 modelData，准备匹配数据
@@ -134,52 +354,82 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 		// 用于跟踪哪些面已经匹配到集合中
 		std::unordered_map<std::string, std::vector<unsigned int>> matchedFacesBySet;
 
-		// 根据体中的group，按ID分组得到真实面（创建新的面组）
-		printProgress("开始创建新的面组（按ID分组）...");
-		for (int i = 0; i < volumes_num; i++)
-		{
-			PREPRO_BASE_NAMESPACE::PFVolume* vol = volumes[i];
-			if (!vol) continue;
+		// SetList 中 Face 集合里 FaceItem.Id（与 ModelTree/CAD 体 Id 一致）：仅对这些体按真实 ID 拆面并做面级识别；若无任何 Face 集合则跳过拆面与面匹配
+		const std::unordered_set<int> cadVolumeIdsFaceReferenced = collectCadVolumeIdsFromFaceItemsInSetList(modelData);
+		const bool doFaceSplitAndFaceMatching = !cadVolumeIdsFaceReferenced.empty();
 
-			int groups_num = vol->getGroupSize();
-			PREPRO_BASE_NAMESPACE::PFGroup** groups = vol->getGroups();
+		// 阶段1：未拆面时按包围盒做 JSON Solid 体级匹配与重命名
+		printProgress("体级包围盒匹配与重命名（拆面前）...");
+		runVolumeSolidBboxMatchPass(m_geometryAPI, m_logger, volumes, volumes_num, modelData, jsonSolids, tolerance, stats, verboseLog,
+			[this](const BoundingBox3D& a, const BoundingBox3D& b, double tol) {
+				return matchBoundingBox(a, b, tol);
+			});
 
-			for (int j = 0; j < groups_num; j++)
-			{
-				PREPRO_BASE_NAMESPACE::PFGroup* group = groups[j];
-				if (!group) continue;
-
-				char* group_name = group->getName();
-				createFaceGroupsInGroup(group, group_name ? group_name : "未命名", modelData, tolerance, &matchedFacesBySet, verboseLog);
-			}
-		}
-
-		// 重新获取最新数据（必须调用，创建面组后数据结构已改变）
-		printProgress("重新获取最新几何数据（创建面组后）...");
+		printProgress("体级匹配后刷新几何数据...");
 		PREPRO_BASE_NAMESPACE::PFData geometryData;
 		if (!m_geometryAPI->getAllData(geometryData))
 		{
-			setError("重新获取几何数据失败: " + m_geometryAPI->getLastError());
+			setError("体级匹配后重新获取几何数据失败: " + m_geometryAPI->getLastError());
 			return false;
 		}
-
 		volumes_num = geometryData.getVolumeSize();
 		volumes = geometryData.getVolumes();
 
-		if (m_logger)
+		// 阶段2：仅当 SetList 中存在 Face 集合时，对引用到的体按真实面 ID 创建新面组
+		if (doFaceSplitAndFaceMatching)
 		{
-			m_logger->logOutputLine("创建面组后重新获取的体对象数量: " + std::to_string(volumes_num));
-		}
+			printProgress("开始按需创建面组（按ID分组），仅处理 SetList 中 Face 集合引用的体...");
+			for (int i = 0; i < volumes_num; i++)
+			{
+				PREPRO_BASE_NAMESPACE::PFVolume* vol = volumes[i];
+				if (!vol) continue;
+				const int vol_id = vol->getId();
+				if (!cadVolumeIdsFaceReferenced.count(vol_id))
+					continue;
 
-		if (volumes_num == 0)
-		{
+				int groups_num = vol->getGroupSize();
+				PREPRO_BASE_NAMESPACE::PFGroup** groups = vol->getGroups();
+
+				for (int j = 0; j < groups_num; j++)
+				{
+					PREPRO_BASE_NAMESPACE::PFGroup* group = groups[j];
+					if (!group) continue;
+
+					char* group_name = group->getName();
+					createFaceGroupsInGroup(group, group_name ? group_name : "未命名", modelData, tolerance, &matchedFacesBySet, verboseLog);
+				}
+			}
+
+			// 重新获取最新数据（必须调用，创建面组后数据结构已改变）
+			printProgress("重新获取最新几何数据（创建面组后）...");
+			if (!m_geometryAPI->getAllData(geometryData))
+			{
+				setError("重新获取几何数据失败: " + m_geometryAPI->getLastError());
+				return false;
+			}
+
+			volumes_num = geometryData.getVolumeSize();
+			volumes = geometryData.getVolumes();
+
 			if (m_logger)
 			{
-				m_logger->logOutputLine("⚠ 警告: 创建面组后体对象数量为0！");
-				m_logger->logOutputLine("  尝试使用初始数据继续处理...");
+				m_logger->logOutputLine("创建面组后重新获取的体对象数量: " + std::to_string(volumes_num));
 			}
-			volumes_num = initialGeometryData.getVolumeSize();
-			volumes = initialGeometryData.getVolumes();
+
+			if (volumes_num == 0)
+			{
+				if (m_logger)
+				{
+					m_logger->logOutputLine("⚠ 警告: 创建面组后体对象数量为0！");
+					m_logger->logOutputLine("  尝试使用初始数据继续处理...");
+				}
+				volumes_num = initialGeometryData.getVolumeSize();
+				volumes = initialGeometryData.getVolumes();
+			}
+		}
+		else
+		{
+			printProgress("SetList 中无 Face 集合，跳过按 ID 拆面与面级匹配识别");
 		}
 
 		// 遍历所有面组，删除elementSize为0的面组
@@ -230,276 +480,80 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 			}
 		}
 
-			// 开始分析体和面（优化：边遍历边计算包围盒，不存储所有顶点，消除重复计算）
-		printProgress("开始分析体和面...");
 		stats.totalVolumes = volumes_num;
-		
-		if (m_logger && verboseLog)
+
+		// 阶段3：面级识别（仅当存在 Face 集合并已拆面时执行）
+		if (doFaceSplitAndFaceMatching)
 		{
-			m_logger->logOutputLine("\n======== 开始分析 " + std::to_string(volumes_num) + " 个体对象 ========");
-		}
-		if (m_logger && verboseLog && modelData && !jsonSolids.empty())
-		{
-			m_logger->logOutputLine("开始体匹配阶段：将 " + std::to_string(volumes_num) + " 个几何体与 " + std::to_string(jsonSolids.size()) + " 个 JSON 体进行包围盒对比");
-		}
-		
-		for (int i = 0; i < volumes_num; i++)
-		{
+			printProgress("开始分析体和面...");
 			if (m_logger && verboseLog)
 			{
-				m_logger->logOutputLine("\n--------------------------");
+				m_logger->logOutputLine("\n======== 开始分析 " + std::to_string(volumes_num) + " 个体对象 ========");
+			}
+			if (m_logger && verboseLog && modelData && !jsonSolids.empty())
+			{
+				m_logger->logOutputLine("面级识别阶段（体级包围盒匹配已在拆面前完成；JSON Solid 数=" + std::to_string(jsonSolids.size()) + "）");
 			}
 
-			PREPRO_BASE_NAMESPACE::PFVolume* vol = volumes[i];
-			char* vol_name = vol->getName();
-			int vol_id = vol->getId();
-
-			// 优化：边遍历边计算包围盒，不存储所有顶点，避免重复计算
-			int groups_num = vol->getGroupSize();
-			PREPRO_BASE_NAMESPACE::PFGroup** groups = vol->getGroups();
-			
-			bool hasVertices = false;
-			double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0, min_z = 0.0, max_z = 0.0;
-			bool firstVertex = true;
-
-			// 遍历所有组，边遍历边计算包围盒
-			for (int j = 0; j < groups_num; j++)
+			for (int i = 0; i < volumes_num; i++)
 			{
-				PREPRO_BASE_NAMESPACE::PFGroup* group = groups[j];
-				if (!group) continue;
-
-				size_t vertex_count = group->getVertexSize();
-				double* vertexs = group->getVertexes();
-
-				for (size_t k = 0; k < vertex_count * 3; k += 3)
-				{
-					double x = vertexs[k];
-					double y = vertexs[k + 1];
-					double z = vertexs[k + 2];
-
-					if (firstVertex)
-					{
-						min_x = max_x = x;
-						min_y = max_y = y;
-						min_z = max_z = z;
-						firstVertex = false;
-						hasVertices = true;
-					}
-					else
-					{
-						min_x = std::min(min_x, x);
-						max_x = std::max(max_x, x);
-						min_y = std::min(min_y, y);
-						max_y = std::max(max_y, y);
-						min_z = std::min(min_z, z);
-						max_z = std::max(max_z, z);
-					}
-				}
-			}
-
-			// 计算包围盒并匹配（优化：合并计算，避免重复调用calculateBoundingBoxAndCentroid）
-			BoundingBox3D volumeBBox;
-			if (hasVertices)
-			{
-				volumeBBox.minPoint = Point3D(min_x, min_y, min_z);
-				volumeBBox.maxPoint = Point3D(max_x, max_y, max_z);
-				volumeBBox.center = Point3D((min_x + max_x) / 2.0, (min_y + max_y) / 2.0, (min_z + max_z) / 2.0);
-				volumeBBox.size = Point3D(max_x - min_x, max_y - min_y, max_z - min_z);
-
 				if (m_logger && verboseLog)
 				{
-					m_logger->logOutputLine("体对象 #" + std::to_string(i + 1) + " (ID: " + std::to_string(vol_id) + ", 名称: " + (vol_name ? std::string(vol_name) : "未命名") + ")");
-					m_logger->logOutputLine("  包围盒信息:");
-					m_logger->logOutputLine("    中心点(Center): (" + std::to_string(volumeBBox.center.x) + ", " + std::to_string(volumeBBox.center.y) + ", " + std::to_string(volumeBBox.center.z) + ")");
-					m_logger->logOutputLine("    尺寸(Size): " + std::to_string(volumeBBox.size.x) + " × " + std::to_string(volumeBBox.size.y) + " × " + std::to_string(volumeBBox.size.z));
-					m_logger->logOutputLine("    边界范围: [" + std::to_string(min_x) + "~" + std::to_string(max_x) + ", " + std::to_string(min_y) + "~" + std::to_string(max_y) + ", " + std::to_string(min_z) + "~" + std::to_string(max_z) + "]");
+					m_logger->logOutputLine("\n--------------------------");
 				}
 
-				// 根据包围盒与JSON数据中的体去匹配，匹配成功改名字
-				if (modelData && !jsonSolids.empty())
+				PREPRO_BASE_NAMESPACE::PFVolume* vol = volumes[i];
+				if (!vol)
+					continue;
+				int vol_id = vol->getId();
+
+				int groups_num = vol->getGroupSize();
+				PREPRO_BASE_NAMESPACE::PFGroup** groups = vol->getGroups();
+
+				// 体级匹配已在拆面前完成；此处仅做面级识别
+				std::vector<std::string> volumeFaceGroupNames;
+				volumeFaceGroupNames.reserve(groups_num * 10); // 优化3：预分配容量
+				for (int j = 0; j < groups_num; j++)
 				{
+					PREPRO_BASE_NAMESPACE::PFGroup* group = groups[j];
+					if (!group) continue;
+
+					char* group_name = group->getName();
+					int group_id = group->getId();
+
 					if (m_logger && verboseLog)
 					{
-						m_logger->logOutputLine("  [体匹配] 正在与 " + std::to_string(jsonSolids.size()) + " 个 JSON 体进行包围盒对比...");
+						m_logger->logOutputLine("  分析组: " + (group_name ? std::string(group_name) : "未命名") + " (ID: " + std::to_string(group_id) + ")");
 					}
-					std::string currentName = vol_name ? std::string(vol_name) : "";
-					std::string matchedName;
-					bool foundMatch = false;
-					
-					// 遍历所有JSON体进行匹配（撤销提前退出策略）
-					for (const auto& jsonSolid : jsonSolids)
+					std::vector<std::string> faceGroupNames = analyzeFacesInGroupAndGetNames(group, j + 1, group_name ? group_name : "未命名", modelData, tolerance, &stats, verboseLog);
+					volumeFaceGroupNames.insert(volumeFaceGroupNames.end(), faceGroupNames.begin(), faceGroupNames.end());
+				}
+
+				char* finalVolName = vol->getName();
+				std::string volumeName = finalVolName ? std::string(finalVolName) : "";
+				if (volumeName.empty())
+				{
+					volumeName = "Volume_" + std::to_string(vol_id);
+				}
+
+				std::set<std::string> uniqueFaceGroups(volumeFaceGroupNames.begin(), volumeFaceGroupNames.end());
+				volumeFaceGroupNames.assign(uniqueFaceGroups.begin(), uniqueFaceGroups.end());
+
+				if (!volumeFaceGroupNames.empty())
+				{
+					(*volumeFaceGroupsMap)[volumeName] = volumeFaceGroupNames;
+				}
+
+				if (geometryModel)
+				{
+					auto geometryVolume = createGeometryVolume(vol, i);
+					if (geometryVolume)
 					{
-						const BoundingBox3D& jsonBBox = jsonSolid.first;
-						const std::string& candidateName = jsonSolid.second;
-
-						if (matchBoundingBox(volumeBBox, jsonBBox, tolerance))
-						{
-							matchedName = candidateName;
-							foundMatch = true;
-							stats.matchedVolumes++;
-							if (m_logger && verboseLog)
-							{
-								m_logger->logOutputLine("  ✓ 匹配成功: \"" + matchedName + "\"");
-							}
-
-							if (currentName != matchedName)
-							{
-								if (!currentName.empty())
-								{
-									char* actualVolName = vol->getName();
-									std::string actualName = actualVolName ? std::string(actualVolName) : "";
-									if (actualName != currentName)
-									{
-										currentName = actualName;
-									}
-									
-									// 检查是否存在同名体积（避免名称冲突）
-									bool nameConflict = false;
-									for (int k = 0; k < volumes_num; k++)
-									{
-										if (k != i)
-										{
-											PREPRO_BASE_NAMESPACE::PFVolume* otherVol = volumes[k];
-											if (otherVol)
-											{
-												char* otherName = otherVol->getName();
-												if (otherName && std::string(otherName) == matchedName)
-												{
-													nameConflict = true;
-													if (m_logger && verboseLog)
-													{
-														m_logger->logOutputLine("  ⚠ 警告: 目标名称已存在，跳过重命名");
-													}
-													break;
-												}
-											}
-										}
-									}
-									
-									if (!nameConflict)
-									{
-										if (m_geometryAPI->renameVolume(currentName, matchedName))
-										{
-											if (m_logger && verboseLog)
-											{
-												m_logger->logOutputLine("  ✓ 重命名成功: \"" + currentName + "\" -> \"" + matchedName + "\"");
-											}
-											stats.renamedVolumes++;
-											stats.volumeRenames.push_back({ currentName, matchedName });
-										}
-										else
-										{
-											if (m_logger && verboseLog)
-											{
-												m_logger->logOutputLine("  ✗ 重命名失败: " + m_geometryAPI->getLastError());
-											}
-										}
-									}
-								}
-								else
-								{
-									std::string tempName = "Volume_" + std::to_string(vol_id);
-									if (m_geometryAPI->renameVolume(tempName, matchedName))
-									{
-										if (m_logger && verboseLog)
-										{
-											m_logger->logOutputLine("  ✓ 重命名成功: \"" + tempName + "\" -> \"" + matchedName + "\"");
-										}
-										stats.renamedVolumes++;
-										stats.volumeRenames.push_back({ tempName, matchedName });
-									}
-									else
-									{
-										if (m_logger && verboseLog)
-										{
-											m_logger->logOutputLine("  ✗ 重命名失败: " + m_geometryAPI->getLastError());
-										}
-									}
-								}
-							}
-							// 撤销提前退出策略：继续遍历所有JSON体
-						}
-					}
-
-					if (!foundMatch)
-					{
-						std::string unmatchedName = currentName.empty() ? ("Volume_" + std::to_string(vol_id)) : currentName;
-						stats.unmatchedVolumeNames.push_back(unmatchedName);
+						geometryModel->addVolume(geometryVolume);
 						if (m_logger && verboseLog)
 						{
-							m_logger->logOutputLine("  ✗ 未找到匹配的JSON体（包围盒对比）");
-							// 包围盒调试信息：找出偏差最小的 JSON 体
-							double bestMaxDev = 1e300;
-							size_t bestIdx = 0;
-							for (size_t k = 0; k < jsonSolids.size(); ++k)
-							{
-								const BoundingBox3D& jb = jsonSolids[k].first;
-								double dxMin = std::abs(volumeBBox.minPoint.x - jb.minPoint.x);
-								double dyMin = std::abs(volumeBBox.minPoint.y - jb.minPoint.y);
-								double dzMin = std::abs(volumeBBox.minPoint.z - jb.minPoint.z);
-								double dxMax = std::abs(volumeBBox.maxPoint.x - jb.maxPoint.x);
-								double dyMax = std::abs(volumeBBox.maxPoint.y - jb.maxPoint.y);
-								double dzMax = std::abs(volumeBBox.maxPoint.z - jb.maxPoint.z);
-								double maxDev = std::max(std::max(std::max(dxMin, dyMin), std::max(dzMin, dxMax)), std::max(dyMax, dzMax));
-								if (maxDev < bestMaxDev) { bestMaxDev = maxDev; bestIdx = k; }
-							}
-							const auto& bestJson = jsonSolids[bestIdx];
-							m_logger->logOutputLine("    [调试] 容差: " + std::to_string(tolerance) + ", 最近JSON体: \"" + bestJson.second + "\"");
-							m_logger->logOutputLine("    [调试] 几何体 Min(" + std::to_string(volumeBBox.minPoint.x) + "," + std::to_string(volumeBBox.minPoint.y) + "," + std::to_string(volumeBBox.minPoint.z) + ") Max(" + std::to_string(volumeBBox.maxPoint.x) + "," + std::to_string(volumeBBox.maxPoint.y) + "," + std::to_string(volumeBBox.maxPoint.z) + ")");
-							m_logger->logOutputLine("    [调试] JSON体 Min(" + std::to_string(bestJson.first.minPoint.x) + "," + std::to_string(bestJson.first.minPoint.y) + "," + std::to_string(bestJson.first.minPoint.z) + ") Max(" + std::to_string(bestJson.first.maxPoint.x) + "," + std::to_string(bestJson.first.maxPoint.y) + "," + std::to_string(bestJson.first.maxPoint.z) + ")");
-							m_logger->logOutputLine("    [调试] 最大偏差: " + std::to_string(bestMaxDev));
+							m_logger->logOutputLine("  ✓ 几何体数据结构已创建，包含 " + std::to_string(geometryVolume->getFaceCount()) + " 个面");
 						}
-					}
-				}
-			}
-
-			// 然后分析真实面：遍历每个组，分析其中的真实面
-			std::vector<std::string> volumeFaceGroupNames;
-			volumeFaceGroupNames.reserve(groups_num * 10); // 优化3：预分配容量
-			for (int j = 0; j < groups_num; j++)
-			{
-				PREPRO_BASE_NAMESPACE::PFGroup* group = groups[j];
-				if (!group) continue;
-
-				char* group_name = group->getName();
-				int group_id = group->getId();
-
-				if (m_logger && verboseLog)
-				{
-					m_logger->logOutputLine("  分析组: " + (group_name ? std::string(group_name) : "未命名") + " (ID: " + std::to_string(group_id) + ")");
-				}
-				std::vector<std::string> faceGroupNames = analyzeFacesInGroupAndGetNames(group, j + 1, group_name ? group_name : "未命名", modelData, tolerance, &stats, verboseLog);
-				volumeFaceGroupNames.insert(volumeFaceGroupNames.end(), faceGroupNames.begin(), faceGroupNames.end());
-			}
-			
-			// 获取最终的体名称（可能已被重命名）
-			char* finalVolName = vol->getName();
-			std::string volumeName = finalVolName ? std::string(finalVolName) : "";
-			if (volumeName.empty())
-			{
-				volumeName = "Volume_" + std::to_string(vol_id);
-			}
-			
-			// 去重面组名称
-			std::set<std::string> uniqueFaceGroups(volumeFaceGroupNames.begin(), volumeFaceGroupNames.end());
-			volumeFaceGroupNames.assign(uniqueFaceGroups.begin(), uniqueFaceGroups.end());
-			
-			// 存储到映射表中
-			if (!volumeFaceGroupNames.empty())
-			{
-				(*volumeFaceGroupsMap)[volumeName] = volumeFaceGroupNames;
-			}
-
-			// 创建几何体数据结构对象
-			if (geometryModel)
-			{
-				auto geometryVolume = createGeometryVolume(vol, i);
-				if (geometryVolume)
-				{
-					geometryModel->addVolume(geometryVolume);
-						if (m_logger && verboseLog)
-					{
-						m_logger->logOutputLine("  ✓ 几何体数据结构已创建，包含 " + std::to_string(geometryVolume->getFaceCount()) + " 个面");
 					}
 				}
 			}
@@ -535,6 +589,9 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 		// 输出匹配和重命名总结
 		if (m_logger)
 		{
+			const auto geometryMatchingEnd = std::chrono::high_resolution_clock::now();
+			const std::chrono::duration<double> geometryMatchingElapsed = geometryMatchingEnd - geometryMatchingStart;
+
 			m_logger->logOutputLine("");
 			m_logger->logOutputLine("╔════════════════════════════════════════════════════════════╗");
 			m_logger->logOutputLine("║              匹配和重命名总结报告                          ║");
@@ -607,6 +664,12 @@ bool GeometryProcessor::analyzeVolumes(ProjectModelData* modelData,
 				}
 			}
 			
+			m_logger->logOutputLine("");
+			{
+				std::ostringstream timeOss;
+				timeOss << std::fixed << std::setprecision(3) << "几何匹配总耗时: " << geometryMatchingElapsed.count() << " 秒";
+				m_logger->logOutputLine(timeOss.str());
+			}
 			m_logger->logOutputLine("");
 			m_logger->logOutputLine("╔════════════════════════════════════════════════════════════╗");
 			m_logger->logOutputLine("║                    总结报告结束                              ║");

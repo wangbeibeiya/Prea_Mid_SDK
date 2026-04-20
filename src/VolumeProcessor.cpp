@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <set>
 #include <cmath>
 #include <fstream>
@@ -29,6 +30,56 @@ using json = nlohmann::json;
 extern "C" {
     MeshVisualizationServer* GetServerInstance();
 }
+
+namespace {
+
+bool isSdkDeletedVolumePlaceholder(const std::string& n)
+{
+	return n.find("_S-REMOVED-") != std::string::npos;
+}
+
+void applyVolumeRenameOverlay(std::vector<std::string>& names,
+	const std::vector<std::pair<std::string, std::string>>& renames)
+{
+	if (renames.empty() || names.empty())
+		return;
+	std::unordered_map<std::string, std::string> oldToNew;
+	oldToNew.reserve(renames.size() * 2 + 1);
+	for (const auto& p : renames)
+		oldToNew[p.first] = p.second;
+	for (auto& n : names)
+	{
+		auto it = oldToNew.find(n);
+		if (it != oldToNew.end())
+			n = it->second;
+	}
+}
+
+void collectDisplayVolumeNamesFromData(const PREPRO_BASE_NAMESPACE::PFData& data,
+	const std::vector<std::pair<std::string, std::string>>& renames,
+	std::vector<std::string>& out)
+{
+	out.clear();
+	int n = data.getVolumeSize();
+	PREPRO_BASE_NAMESPACE::PFVolume** vols = data.getVolumes();
+	if (!vols)
+		return;
+	for (int i = 0; i < n; ++i)
+	{
+		if (!vols[i])
+			continue;
+		char* name = vols[i]->getName();
+		if (!name || !name[0])
+			continue;
+		std::string raw(name);
+		if (isSdkDeletedVolumePlaceholder(raw))
+			continue;
+		out.push_back(std::move(raw));
+	}
+	applyVolumeRenameOverlay(out, renames);
+}
+
+} // namespace
 
 VolumeProcessor::VolumeProcessor(const std::string& examplePath, Logger* appLogger)
 	: m_geometryAPI(std::make_unique<GeometryAPI>(examplePath))
@@ -105,6 +156,9 @@ bool VolumeProcessor::importGeometryModel(const std::string& filePath,
 		setError("无效的文件路径: " + filePath);
 		return false;
 	}
+
+	m_sessionVolumeRenames.clear();
+	m_cachedDisplayVolumeNames.clear();
 
 	// 使用 appLogger 时不再单独初始化日志（已在程序启动时创建）
 	if (!m_appLogger && modelData)
@@ -194,6 +248,9 @@ bool VolumeProcessor::executeGeometryMatching(ProjectModelData* modelData, bool 
 		return false;
 	}
 
+	m_sessionVolumeRenames.clear();
+	m_cachedDisplayVolumeNames.clear();
+
 	// 体已在 executeGeometryProcessing 中通过 findVolumes 找到
 	int volumeCount = m_geometryAPI->findVolumes();
 	if (volumeCount <= 0)
@@ -252,7 +309,39 @@ bool VolumeProcessor::executeGeometryMatching(ProjectModelData* modelData, bool 
 		}
 	}
 
+	if (modelData)
+		m_sessionVolumeRenames = modelData->getVolumeRenameMap();
+
+	rebuildDisplayVolumeNameCache();
+
 	printProgress("几何识别匹配完成");
+	return true;
+}
+
+void VolumeProcessor::rebuildDisplayVolumeNameCache()
+{
+	m_cachedDisplayVolumeNames.clear();
+	if (!m_geometryAPI)
+		return;
+	PREPRO_BASE_NAMESPACE::PFData data;
+	if (!m_geometryAPI->getAllData(data))
+		return;
+	collectDisplayVolumeNamesFromData(data, m_sessionVolumeRenames, m_cachedDisplayVolumeNames);
+}
+
+bool VolumeProcessor::getVolumeListDisplayNames(std::vector<std::string>& out) const
+{
+	if (!m_geometryAPI)
+		return false;
+	if (!m_cachedDisplayVolumeNames.empty())
+	{
+		out = m_cachedDisplayVolumeNames;
+		return true;
+	}
+	PREPRO_BASE_NAMESPACE::PFData data;
+	if (!m_geometryAPI->getAllData(data))
+		return false;
+	collectDisplayVolumeNamesFromData(data, m_sessionVolumeRenames, out);
 	return true;
 }
 
@@ -267,6 +356,41 @@ bool VolumeProcessor::refreshGeometryData()
 	}
 	printProgress("顶层数据已刷新");
 	return true;
+}
+
+void VolumeProcessor::onVolumeDeletedByName(const std::string& deletedVolumeName)
+{
+	std::unordered_set<std::string> eraseDisplay;
+	if (!deletedVolumeName.empty())
+	{
+		eraseDisplay.insert(deletedVolumeName);
+		for (const auto& p : m_sessionVolumeRenames)
+		{
+			if (p.first == deletedVolumeName || p.second == deletedVolumeName)
+				eraseDisplay.insert(p.second);
+		}
+	}
+
+	if (!deletedVolumeName.empty() && !m_sessionVolumeRenames.empty())
+	{
+		auto& m = m_sessionVolumeRenames;
+		m.erase(std::remove_if(m.begin(), m.end(),
+			[&deletedVolumeName](const std::pair<std::string, std::string>& p) {
+				return p.first == deletedVolumeName || p.second == deletedVolumeName;
+			}),
+			m.end());
+	}
+
+	if (!m_cachedDisplayVolumeNames.empty() && !eraseDisplay.empty())
+	{
+		m_cachedDisplayVolumeNames.erase(
+			std::remove_if(m_cachedDisplayVolumeNames.begin(), m_cachedDisplayVolumeNames.end(),
+				[&eraseDisplay](const std::string& v) { return eraseDisplay.count(v) != 0; }),
+			m_cachedDisplayVolumeNames.end());
+	}
+
+	// 删除体后禁止调用 findVolumes：该操作为缝合/识别封闭体，可能把与已删体共面的区域重新围成新体
+	refreshGeometryData();
 }
 
 bool VolumeProcessor::saveGeometryPpcf(ProjectModelData* modelData) const
@@ -653,6 +777,8 @@ void VolumeProcessor::reset()
 	m_successfulRepairCount = 0;
 	m_foundVolumeCount = 0;
 	m_lastError.clear();
+	m_sessionVolumeRenames.clear();
+	m_cachedDisplayVolumeNames.clear();
 
 	printProgress("处理器状态已重置");
 }

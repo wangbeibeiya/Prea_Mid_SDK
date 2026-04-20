@@ -81,6 +81,11 @@ public:
     GeometryAPI* tryGetGeometryAPIForPath(const std::string& ppcfPath);
 
     /**
+     * @brief 若 ppcf 路径与当前几何/网格会话中的工程 ppcf 一致，返回对应 VolumeProcessor（用于体名映射叠加）
+     */
+    VolumeProcessor* tryGetVolumeProcessorForPath(const std::string& ppcfPath);
+
+    /**
      * @brief 获取当前网格会话的 GeometryAPI（无路径时复用 ExecuteMeshGeneration 后的缓存）
      * @return GeometryAPI 指针，无缓存返回 nullptr
      */

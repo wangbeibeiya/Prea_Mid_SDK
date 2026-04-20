@@ -17,6 +17,8 @@
 #include <fstream>
 #include <filesystem>
 #include <sstream>
+#include <chrono>
+#include <iomanip>
 #include <thread>
 #include <json.hpp>
 
@@ -62,6 +64,16 @@ GeometryAPI* ModelProcessingServer::tryGetGeometryAPIForPath(const std::string& 
         VolumeProcessor* p = getSession(m_meshSessionId);
         return p ? p->getGeometryAPI() : nullptr;
     }
+    return nullptr;
+}
+
+VolumeProcessor* ModelProcessingServer::tryGetVolumeProcessorForPath(const std::string& ppcfPath)
+{
+    if (ppcfPath.empty()) return nullptr;
+    std::lock_guard<std::mutex> lock(m_meshSessionMutex);
+    std::filesystem::path req(ppcfPath);
+    if (!m_meshSessionId.empty() && !m_meshSessionProjectPath.empty() && std::filesystem::path(m_meshSessionProjectPath) == req)
+        return getSession(m_meshSessionId);
     return nullptr;
 }
 
@@ -563,6 +575,9 @@ json ModelProcessingServer::handleDeleteVolumeByName(const json& params)
         return response;
     }
 
+    // 删除后仅刷新顶层数据，不 findVolumes（findVolumes 会缝合封闭域，可能错误围出新体）
+    processor->onVolumeDeletedByName(volumeName);
+
     response["success"] = true;
     response["message"] = "已删除体: " + volumeName;
     response["sessionId"] = sessionId;
@@ -664,9 +679,13 @@ json ModelProcessingServer::handleExecuteMeshGeneration(const json& params)
 
     std::string err;
     std::string ppcfPathToUse = sessionId.empty() ? ppcfPath : projectPpcfPath;
+    const auto meshGenStart = std::chrono::high_resolution_clock::now();
     bool ok = geometryAPIIn
         ? ModelProcessingServer::executeMeshGenerationFromJson(jsonPath, &err, ppcfPathToUse, m_logger, geometryAPIIn, nullptr, nullptr)
         : ModelProcessingServer::executeMeshGenerationFromJson(jsonPath, &err, ppcfPathToUse, m_logger, nullptr, &m_meshGeometryAPI, &m_meshOpenDocumentPath);
+    const auto meshGenEnd = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double> meshGenElapsed = meshGenEnd - meshGenStart;
+
     if (ok)
     {
         response["success"] = true;
@@ -686,6 +705,14 @@ json ModelProcessingServer::handleExecuteMeshGeneration(const json& params)
         response["error"] = err;
         if (m_logger) m_logger->logOutputLine("[ExecuteMeshGeneration] 失败: " + err);
     }
+
+    if (m_logger)
+    {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(3) << "[ExecuteMeshGeneration] 网格划分总耗时: " << meshGenElapsed.count() << " 秒";
+        m_logger->logOutputLine(oss.str());
+    }
+
     return response;
 }
 

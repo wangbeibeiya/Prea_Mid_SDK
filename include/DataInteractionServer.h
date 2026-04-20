@@ -10,12 +10,18 @@ class ModelProcessingServer;
  * @brief 数据交互服务类
  *
  * 通过 Socket 接收命令，从会话顶层数据查询体列表、面组等。
- * 几何识别匹配创建新 group 后需先调用 RefreshSessionData 刷新顶层数据。
+ *
+ * 体名与面组查询：始终与几何层一致。使用 ppcfPath 且复用已打开的文档时，若文档内同时有几何与网格，
+ * 优先从 PFGeometry::getAllData 取体列表（几何匹配 renameVolume 后仍正确）；网格层 getAllData 可能保留
+ * 划分网格时的旧体名，直至重新分网。
+ *
+ * RefreshSessionData：再次调用 getAllData 刷新会话内缓存；ExecuteGeometryMatching 结束后主流程已刷新，
+ * 若仍遇到异常可手动调用。
  *
  * 命令（sessionId 优先，无会话时可用 ppcfPath 从文件加载）：
  * - GetVolumeListNames: 获取体列表名称
  * - GetFaceGroupNamesByVolume: 获取某个体下的面组名称
- * - RefreshSessionData: 刷新会话顶层数据（匹配后创建新 group 时必调）
+ * - RefreshSessionData: 刷新会话顶层数据
  */
 class DataInteractionServer
 {

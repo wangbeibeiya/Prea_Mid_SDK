@@ -47,16 +47,17 @@ endif()
 
 # Add subdirectories
 add_subdirectory(src)
+add_subdirectory(stp_volume_rename_test)
 
 # Socket 测试客户端（可选，需要 Qt5）
 find_package(Qt5 QUIET COMPONENTS Widgets)
 if(Qt5_FOUND)
     add_subdirectory(socket_test_client)
     # 确保主程序和客户端同时编译
-    add_custom_target(build_all ALL DEPENDS MappingGeometry SocketTestClient)
+    add_custom_target(build_all ALL DEPENDS MappingGeometry SocketTestClient StpVolumeRenameTest)
 else()
     message(STATUS "Qt5 Widgets not found, skip SocketTestClient")
-    add_custom_target(build_all ALL DEPENDS MappingGeometry)
+    add_custom_target(build_all ALL DEPENDS MappingGeometry StpVolumeRenameTest)
 endif()
 
 # add_subdirectory(tests)  # 注释掉测试项目 

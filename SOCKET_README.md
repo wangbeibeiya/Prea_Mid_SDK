@@ -54,7 +54,7 @@ MappingGeometry 通过 Socket 提供 JSON 格式的命令接口，外部程序�
 | **ExecuteGeometryMatching** | 几何识别匹配（analyzeVolumes + 保存 ppcf） | `sessionId`: 会话 ID（必填）<br>`jsonPath`: 项目 JSON 路径（必填）<br>`verboseLog`: 是否输出详细日志（体/面匹配过程、包围盒调试等，默认 false） | `message` |
 | **SavePpcf** | 保存 ppcf（有啥保存啥：有几何保存几何，有网格+几何保存网格+几何） | `savePath`: 保存路径（必填） | `message`, `savePath` |
 | **CloseSession** | 关闭会话 | `sessionId`: 会话 ID（必填） | `message` |
-| **DeleteVolumeByName** | 按名称删除体 | `sessionId`: 会话 ID（必填）<br>`volumeName`: 体名称（必填） | `message`, `deletedVolume` |
+| **DeleteVolumeByName** | 按名称删除体（成功后更新会话映射并刷新顶层数据；**不**调用 `findVolumes`，以免缝合出错误新体） | `sessionId`: 会话 ID（必填）<br>`volumeName`: 体名称（必填，可与匹配后的新名一致） | `message`, `deletedVolume` |
 | **GetUnmatchedVolumeNames** | 获取未匹配的体名称 | `sessionId`: 会话 ID（必填） | `unmatchedVolumeNames`, `count` |
 
 ---
@@ -182,6 +182,9 @@ MappingGeometry 通过 Socket 提供 JSON 格式的命令接口，外部程序�
 ```
 
 **DeleteVolumeByName**
+
+删除成功后服务端会：从会话内 `VolumeRenameMap` 副本中去掉该体对应项，并调用 `refreshGeometryData`（`getAllData`）刷新顶层数据。**不会**在删除后调用 `findVolumes`，因该接口用于缝合/识别封闭体，可能把与已删体共面的区域围成新体。
+
 ```json
 // 请求
 {"command": "DeleteVolumeByName", "params": {"sessionId": "geom_1", "volumeName": "unwanted_volume"}}
@@ -253,6 +256,13 @@ MappingGeometry 通过 Socket 提供 JSON 格式的命令接口，外部程序�
 ### 4. 数据查询
 
 **GetVolumeListNames**
+
+当文档中同时存在几何与网格时，体名列表以**几何层**为准；仅用网格层会得到划分网格时的旧体名，直至重新分网。
+
+**ExecuteGeometryMatching 之后**：服务端在会话中保存当次的 `VolumeRenameMap`。`GetVolumeListNames` 在 SDK 返回的体名上叠加该映射，**始终返回匹配后的新体名**。`GetFaceGroupNamesByVolume` 的 `volumeName` 可传**新名或旧名**（内部会映射到 SDK 仍可能保留的旧名再查找）。
+
+**GetVolumeListNames**：若枚举结果中出现内核占位体名（常含 `_S-REMOVED-`），会**过滤不返回**，以免与真实体混淆。
+
 ```json
 // 请求（从会话）
 {"command": "GetVolumeListNames", "params": {"sessionId": "geom_1"}}
