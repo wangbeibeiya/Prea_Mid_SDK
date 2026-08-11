@@ -121,4 +121,5 @@ private:
     json handleSavePpcf(const json& params);
     json handleGetMeshQuality(const json& params);
     json handleImportPpcf(const json& params);
+    json handleExportMeshToVtu(const json& params);
 };

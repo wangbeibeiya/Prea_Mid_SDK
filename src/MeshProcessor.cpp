@@ -10,6 +10,7 @@
 #include <functional>
 #include <optional>
 #include <set>
+#include <sstream>
 
 MeshProcessor::MeshProcessor(PREPRO_BASE_NAMESPACE::PFDocument* pfDocument)
     : m_pfDocument(pfDocument)
@@ -143,7 +144,7 @@ bool MeshProcessor::setGlobalParameters(const MeshParameters& parameters, const 
     printProgress("全局网格参数设置完成");
 
     // 如果提供了边界层参数，在设置完全局参数后自动设置边界层
-    if (parameters.boundaryLayerParams.has_value() && parameters.fluidZoneSetName.has_value())
+    if (parameters.boundaryLayerParams.has_value() && !parameters.fluidZoneSetNames.empty())
     {
         auto bl = parameters.boundaryLayerParams.value();
         // 第一层高度过小（<10μm）时 SDK 可能不生成边界层，进行下限保护
@@ -154,10 +155,13 @@ bool MeshProcessor::setGlobalParameters(const MeshParameters& parameters, const 
                 " 过小，SDK 可能不生成边界层。已提升至 " + std::to_string(MIN_FIRST_LAYER_HEIGHT) + " m (10μm)");
             bl.firstLayerHeight = MIN_FIRST_LAYER_HEIGHT;
         }
+        std::string fluidZoneSetsStr;
+        for (const auto& name : parameters.fluidZoneSetNames)
+            fluidZoneSetsStr += (fluidZoneSetsStr.empty() ? "" : ", ") + name;
         printProgress("已从JSON加载边界层参数: FirstLayerHeight=" + std::to_string(bl.firstLayerHeight) +
             ", GrowthRate=" + std::to_string(bl.growthRate) +
             ", LayersNumber=" + std::to_string(bl.layersNumber) +
-            ", FluidZoneSet=" + parameters.fluidZoneSetName.value());
+            ", FluidZoneSet=[" + fluidZoneSetsStr + "]");
         if (!parameters.excludedBoundaryNames.empty())
         {
             std::string excluded;
@@ -165,19 +169,26 @@ bool MeshProcessor::setGlobalParameters(const MeshParameters& parameters, const 
             printProgress("排除的边界名称: " + excluded);
         }
         printProgress("全局网格参数设置完成，开始设置边界层参数...");
-        if (!setBoundaryLayersByFluidZoneSet(parameters.fluidZoneSetName.value(), 
-                                             parameters.boundaryLayerParams.value(), 
-                                             modelData,
-                                             parameters.excludedBoundaryNames))
+        bool anySuccess = false;
+        for (const auto& zoneName : parameters.fluidZoneSetNames)
         {
-            // 边界层设置失败不影响全局参数设置，只记录警告
-            printProgress("警告: 边界层参数设置失败: " + getLastError());
-            // 不返回false，因为全局参数已经成功设置
+            if (setBoundaryLayersByFluidZoneSet(zoneName,
+                                                bl,
+                                                modelData,
+                                                parameters.excludedBoundaryNames))
+            {
+                anySuccess = true;
+            }
+            else
+            {
+                // 边界层设置失败不影响全局参数设置，只记录警告
+                printProgress("警告: 流体区域 \"" + zoneName + "\" 边界层参数设置失败: " + getLastError());
+            }
         }
-        else
-        {
+        if (anySuccess)
             printProgress("边界层参数设置完成");
-        }
+        else
+            printProgress("警告: 所有流体区域边界层参数设置均失败");
     }
     else
     {
@@ -446,13 +457,35 @@ bool MeshProcessor::createVolumeMeshByGeometry(bool withInflation, bool withPoly
     printProgress("正在根据几何生成体积网格...");
     
     PREPRO_BASE_NAMESPACE::PFStatus status = m_pfMesh->createVolumeMeshByGeometry(withInflation, withPolyhedron);
+    // 与 demo 行为对齐：若尚未形成几何体，先 findVolumes 后重试一次
+    if (status == PREPRO_BASE_NAMESPACE::PFStatus::ENoGeometryVolume && m_pfDocument)
+    {
+        auto* pfGeometry = dynamic_cast<PREPRO_GEOMETRY_NAMESPACE::PFGeometry*>(m_pfDocument->getGeometryEnvironment());
+        if (pfGeometry && pfGeometry->findVolumes() == PREPRO_BASE_NAMESPACE::PFStatus::EOkay)
+        {
+            status = m_pfMesh->createVolumeMeshByGeometry(withInflation, withPolyhedron);
+        }
+    }
+
     if (status != PREPRO_BASE_NAMESPACE::PFStatus::EOkay)
     {
         setError("根据几何生成体积网格失败");
         return false;
     }
-    
-    printProgress("体积网格生成成功");
+
+    // 生成成功后立刻检查网格数据是否可读，避免“状态成功但取不到数据”的假阳性。
+    PREPRO_BASE_NAMESPACE::PFData pfData;
+    PREPRO_BASE_NAMESPACE::PFStatus dataStatus = m_pfMesh->getAllData(pfData);
+    if (dataStatus == PREPRO_BASE_NAMESPACE::PFStatus::EOkay)
+    {
+        printProgress("体积网格生成成功，网格统计: groupSize=" +
+            std::to_string(pfData.getGroupSize()) + ", volumeSize=" + std::to_string(pfData.getVolumeSize()));
+    }
+    else
+    {
+        printProgress("体积网格生成成功，但读取网格数据失败（getAllData 非 EOkay）");
+    }
+
     return true;
 }
 
@@ -480,6 +513,43 @@ bool MeshProcessor::createVolumeMeshBySurfaceMesh(bool withInflation, bool withP
 void MeshProcessor::setProgressCallback(std::function<void(const std::string&)> callback)
 {
     m_progressCallback = callback;
+}
+
+void MeshProcessor::printEffectiveParameters()
+{
+    if (!m_pfMesh)
+    {
+        printProgress("[MeshParamsEffective] PFMesh未初始化，无法读取实际参数");
+        return;
+    }
+
+    std::ostringstream oss;
+    oss << "[MeshParamsEffective] SDK 实际生效参数(get):\n";
+
+    auto* gp = m_pfMesh->getGlobalParameters();
+    if (!gp)
+    {
+        oss << "  [Global] unavailable (PFGlobalParameters=null)\n";
+        printProgress(oss.str());
+        return;
+    }
+
+    oss << "  [Global]\n";
+
+    // 注意：当前 SDK 头文件中未暴露部分 getter（如 size/proximity/allTriangles/meshQualityOptimization），因此此处仅打印可读回的项。
+    oss << "    Size: unavailable\n";
+    oss << "    GrowthRate=" << gp->getGrowthRate() << "\n";
+    oss << "    CurvatureNormalAngle=" << gp->getCurvatureNormalAngle() << "\n";
+    oss << "    ProximityEnabled=unavailable\n";
+    oss << "    CellsPerGap=" << gp->getCellsPerGap() << "\n";
+    oss << "    MinimumGapSize(m)=" << gp->getMinimumGapSize() << "\n";
+    oss << "    AllTrianglesEnabled=unavailable\n";
+    oss << "    MeshQualityOptimizationEnabled=unavailable\n";
+    oss << "    InflationMinimumQuality=" << gp->getInflationMinimumQuality() << "\n";
+    oss << "    InflationSeparatingAngle=" << gp->getInflationSeparatingAngle() << "\n";
+    oss << "    InflationMaximumHeightBaseRatio=" << gp->getInflationMaximumHeightBaseRatio() << "\n";
+
+    printProgress(oss.str());
 }
 
 void MeshProcessor::printProgress(const std::string& message)

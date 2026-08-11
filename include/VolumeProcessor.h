@@ -28,7 +28,7 @@ public:
         bool enableQuickRepair = true;      ///< 是否启用快速修复
         bool enableFindVolumes = true;      ///< 是否启用体积查找
         bool enableRendering = true;       ///< 是否启用渲染显示（默认不渲染）
-        double repairTolerance = 1e-3;      ///< 修复容差
+        double repairTolerance = 1e-5;      ///< 快速修复容差（quickRepair）
         
         ProcessOptions() = default;
     };
@@ -73,10 +73,16 @@ public:
     /**
      * @brief 3. 几何识别匹配（在已有顶层数据上执行 analyzeVolumes 匹配重命名）
      * @param modelData ProjectModelData 用于 SetList 匹配
+     * @param tolerance 包围盒匹配容差（传入 GeometryProcessor::analyzeVolumes）
      * @param verboseLog 是否输出详细日志（体/面匹配过程、包围盒等），默认 false
      * @return 是否成功
      */
     bool executeGeometryMatching(class ProjectModelData* modelData, bool verboseLog = false);
+
+    /**
+     * @brief 3. 几何识别匹配（指定包围盒匹配容差）
+     */
+    bool executeGeometryMatching(class ProjectModelData* modelData, double tolerance, bool verboseLog);
 
     /**
      * @brief 刷新顶层数据（几何识别匹配创建新 group 后需调用，以更新体/面组数据）

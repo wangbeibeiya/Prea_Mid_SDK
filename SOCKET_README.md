@@ -50,8 +50,8 @@ MappingGeometry 通过 Socket 提供 JSON 格式的命令接口，外部程序�
 | 命令 | 说明 | 参数 | 返回 |
 |------|------|------|------|
 | **ImportGeometryModel** | 导入几何模型 | `jsonPath`: 项目 JSON 路径（必填） | `sessionId`: 会话 ID |
-| **ExecuteGeometryProcessing** | 几何处理（quickRepair + findVolumes） | `sessionId`: 会话 ID（必填）<br>`enableQuickRepair`: 是否快速修复（默认 true）<br>`enableFindVolumes`: 是否查找体（默认 true） | `message` |
-| **ExecuteGeometryMatching** | 几何识别匹配（analyzeVolumes + 保存 ppcf） | `sessionId`: 会话 ID（必填）<br>`jsonPath`: 项目 JSON 路径（必填）<br>`verboseLog`: 是否输出详细日志（体/面匹配过程、包围盒调试等，默认 false） | `message` |
+| **ExecuteGeometryProcessing** | 几何处理（quickRepair + findVolumes） | `sessionId`: 会话 ID（必填）<br>`enableQuickRepair`: 是否快速修复（默认 true）<br>`enableFindVolumes`: 是否查找体（默认 true）<br>`repairTolerance`: 快速修复容差（可选，默认 1e-5） | `message` |
+| **ExecuteGeometryMatching** | 几何识别匹配（analyzeVolumes + 保存 ppcf） | `sessionId`: 会话 ID（必填）<br>`jsonPath`: 项目 JSON 路径（必填）<br>`tolerance`: 包围盒匹配容差（可选，默认使用当前 processOptions.repairTolerance）<br>`verboseLog`: 是否输出详细日志（体/面匹配过程、包围盒调试等，默认 false） | `message` |
 | **SavePpcf** | 保存 ppcf（有啥保存啥：有几何保存几何，有网格+几何保存网格+几何） | `savePath`: 保存路径（必填） | `message`, `savePath` |
 | **CloseSession** | 关闭会话 | `sessionId`: 会话 ID（必填） | `message` |
 | **DeleteVolumeByName** | 按名称删除体（成功后更新会话映射并刷新顶层数据；**不**调用 `findVolumes`，以免缝合出错误新体） | `sessionId`: 会话 ID（必填）<br>`volumeName`: 体名称（必填，可与匹配后的新名一致） | `message`, `deletedVolume` |
@@ -65,7 +65,8 @@ MappingGeometry 通过 Socket 提供 JSON 格式的命令接口，外部程序�
 |------|------|------|------|
 | **ExecuteMeshGeneration** | 执行网格划分 | `jsonPath`: 项目 JSON 路径（必填）<br>`sessionId`: 可选，复用几何 session 的 GeometryAPI<br>`ppcfPath`: 可选，几何 ppcf 路径（空则从 json 推导） | `message` |
 | **GetMeshQuality** | 获取网格质量 | `ppcfPath`: 包含网格的 ppcf 路径（必填） | `elementCount`, `invalidCount`, `worstQuality`, `bestQuality`, `averageQuality`, `qualityRanges` |
-| **ImportPpcf** | 导入 ppcf 并刷新顶层数据 | `ppcfPath`: ppcf 文件路径（必填）<br>`importMode`: "geometry" 使用 openDocument / "mesh" 使用 importMesh（默认 geometry） | `message`, `ppcfPath`, `importMode` |
+| **ImportPpcf** | 导入 ppcf 并刷新顶层数据 | `ppcfPath`: ppcf 文件路径（必填）<br>`importMode`: "geometry" 使用 `openDocument`（默认）/ "mesh" 使用 `importMesh` | `message`, `ppcfPath`, `importMode` |
+| **ExportMeshToVtu** | 导出网格到 VTU（.vtu） | `vtuPath`: 导出的 .vtu 路径（必填）<br>`ppcfPath`: 可选，包含网格的 ppcf；为空则复用 ExecuteMeshGeneration/ImportPpcf 后的网格会话 | `message`, `vtuPath`, `ppcfPath`(可选) |
 
 ---
 
@@ -148,7 +149,7 @@ MappingGeometry 通过 Socket 提供 JSON 格式的命令接口，外部程序�
 // 请求
 {"command": "ExecuteGeometryProcessing", "params": {"sessionId": "geom_1"}}
 // 或带选项
-{"command": "ExecuteGeometryProcessing", "params": {"sessionId": "geom_1", "enableQuickRepair": true, "enableFindVolumes": true}}
+{"command": "ExecuteGeometryProcessing", "params": {"sessionId": "geom_1", "enableQuickRepair": true, "enableFindVolumes": true, "repairTolerance": 1e-5}}
 
 // 响应
 {"success": true, "message": "几何处理完成"}
@@ -216,6 +217,18 @@ MappingGeometry 通过 Socket 提供 JSON 格式的命令接口，外部程序�
 
 // 响应
 {"success": true, "message": "网格划分完成"}
+```
+
+**ExportMeshToVtu**
+```json
+// 请求（传 ppcfPath：直接从该文件读取网格并导出）
+{"command": "ExportMeshToVtu", "params": {"vtuPath": "F:/Project/T1230/T1230_mesh.vtu", "ppcfPath": "F:/Project/T1230/T1230.ppcf"}}
+
+// 请求（不传 ppcfPath：复用 ExecuteMeshGeneration 或 ImportPpcf 后的 GeometryAPI）
+{"command": "ExportMeshToVtu", "params": {"vtuPath": "F:/Project/T1230/T1230_mesh.vtu"}}
+
+// 响应
+{"success": true, "message": "已导出 vtu: F:/Project/T1230/T1230_mesh.vtu", "vtuPath": "F:/Project/T1230/T1230_mesh.vtu"}
 ```
 
 **GetMeshQuality**

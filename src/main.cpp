@@ -4,6 +4,7 @@
 #include "ModelProcessingServer.h"
 #include "DataInteractionServer.h"
 #include "../include/Logger.h"
+#include <atomic>
 #include <iostream>
 #include <string>
 #include <filesystem>
@@ -11,12 +12,37 @@
 #include <windows.h>
 #ifdef MAPPING_GEOMETRY_HAS_QT5_CORE
 #include <QCoreApplication>
+#include <QMetaObject>
 #endif
 
 extern "C" {
     void SetServerInstance(MeshVisualizationServer*);
     MeshVisualizationServer* GetServerInstance();
 }
+
+namespace {
+std::atomic<bool> g_keepRunning{true};
+
+BOOL WINAPI consoleCtrlHandler(DWORD ctrlType)
+{
+    switch (ctrlType) {
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_LOGOFF_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+        g_keepRunning.store(false);
+#ifdef MAPPING_GEOMETRY_HAS_QT5_CORE
+        if (QCoreApplication::instance()) {
+            QMetaObject::invokeMethod(QCoreApplication::instance(), "quit", Qt::QueuedConnection);
+        }
+#endif
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+} // namespace
 
 static std::string getAppLogPath() {
     const char* appData = std::getenv("APPDATA");
@@ -46,7 +72,8 @@ int main(int argc, char* argv[]) {
     // 程序启动时创建日志（%APPDATA%/PERA SIM Therm/MappingGeometry.Log）
     static Logger appLogger;
     std::string logPath = getAppLogPath();
-    if (!logPath.empty() && appLogger.initializeLogFile(logPath, false)) {
+    // append=true：避免每次启动截断日志，便于排查“进程很快退出”等问题
+    if (!logPath.empty() && appLogger.initializeLogFile(logPath, true)) {
         appLogger.logOutput("========================================");
         appLogger.logOutput("程序启动 - " + appLogger.getCurrentTimeString());
         appLogger.logOutput("日志路径: " + logPath);
@@ -114,8 +141,37 @@ int main(int argc, char* argv[]) {
 
     SetServerInstance(&meshServer);
     std::cout << "Socket 服务器已启动，端口: " << socketPort << std::endl;
-    std::cout << "通过 Socket 发送命令执行完整流程，按 Enter 退出..." << std::endl;
 
-    std::cin.get();
+    // 注意：Fluid 通过 QProcess::startDetached 启动时 stdin 立即 EOF。
+    // 旧实现用 std::cin.get() 保活会在 ~100ms 内以 exit 0 退出，表现为“进程消失/崩溃”。
+    SetConsoleCtrlHandler(consoleCtrlHandler, TRUE);
+    sharedSocket.registerCommand("Shutdown", [](const nlohmann::json&) {
+        nlohmann::json response;
+        response["success"] = true;
+        response["message"] = "shutting down";
+        g_keepRunning.store(false);
+#ifdef MAPPING_GEOMETRY_HAS_QT5_CORE
+        if (QCoreApplication::instance()) {
+            QMetaObject::invokeMethod(QCoreApplication::instance(), "quit", Qt::QueuedConnection);
+        }
+#endif
+        return response;
+    });
+
+    std::cout << "Socket 服务保活中。发送 Shutdown 命令或 Ctrl+C 退出..." << std::endl;
+    appLogger.logOutput("Socket 服务保活中（非 stdin；可用 Shutdown / Ctrl+C 退出）");
+
+#ifdef MAPPING_GEOMETRY_HAS_QT5_CORE
+    const int exitCode = qtApp.exec();
+    sharedSocket.stop();
+    appLogger.logOutput("程序退出 - " + appLogger.getCurrentTimeString());
+    return exitCode;
+#else
+    while (g_keepRunning.load()) {
+        Sleep(500);
+    }
+    sharedSocket.stop();
+    appLogger.logOutput("程序退出 - " + appLogger.getCurrentTimeString());
     return 0;
+#endif
 }

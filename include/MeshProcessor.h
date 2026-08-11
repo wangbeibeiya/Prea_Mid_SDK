@@ -50,7 +50,7 @@ public:
         
         // 边界层参数（可选）
         std::optional<BoundaryLayerParameters> boundaryLayerParams;  ///< 边界层参数（如果设置，将在全局参数设置后自动应用）
-        std::optional<std::string> fluidZoneSetName;                ///< 流体区域集合名称（用于边界层设置）
+        std::vector<std::string> fluidZoneSetNames;                  ///< 流体区域集合名称列表（用于边界层设置，支持多选）
         std::set<std::string> excludedBoundaryNames;                ///< 排除的边界名称列表（非Wall类型的边界条件，如VelocityInlet、PressureOutlet等）
         
         MeshParameters() = default;
@@ -151,6 +151,17 @@ public:
      * @param callback 回调函数
      */
     void setProgressCallback(std::function<void(const std::string&)> callback);
+
+    /**
+     * @brief 打印底层环境中“实际生效”的网格参数（尝试调用 SDK 的 getXXX 接口读回）
+     * @note 仅在 SDK 暴露了对应 getter 时可获取；不可获取的项会打印为 unavailable
+     */
+    void printEffectiveParameters();
+
+    /**
+     * @brief 打印网格数据统计（用于判断是否真的生成了网格）
+     */
+    void printMeshDataSummary();
 
 private:
     PREPRO_BASE_NAMESPACE::PFDocument* m_pfDocument;  ///< PFDocument指针（不拥有所有权）

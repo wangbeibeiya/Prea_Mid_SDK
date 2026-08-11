@@ -105,6 +105,21 @@ if(MSVC)
     copy_dll_if_exists("fluidModel.dll")
     copy_dll_if_exists("model_database.dll")
     copy_dll_if_exists("openNURBS3.dll")
+
+    # 编译成功后自动部署 MappingGeometry 到 co-de-sim Fluid 输出目录
+    set(CODESIM_FLUID_DEPLOY_BASE "E:/wbb/GitSrc/co-de-sim/out/bin")
+
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${CODESIM_FLUID_DEPLOY_BASE}/$<CONFIG>/Fluid/MappingGeometry"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:${PROJECT_NAME}>"
+            "${CODESIM_FLUID_DEPLOY_BASE}/$<CONFIG>/Fluid/MappingGeometry/"
+        COMMAND ${CMAKE_COMMAND} -E $<IF:$<CONFIG:Debug>,copy_if_different,true>
+            "$<TARGET_PDB_FILE:${PROJECT_NAME}>"
+            "${CODESIM_FLUID_DEPLOY_BASE}/$<CONFIG>/Fluid/MappingGeometry/"
+        COMMENT "Deploying ${PROJECT_NAME} to co-de-sim ($<CONFIG>)..."
+    )
 endif()
 
 # Debug test properties removed

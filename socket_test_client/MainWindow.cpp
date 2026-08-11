@@ -50,7 +50,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_client(new Sock
     QStringList cmdList = {
         "ListCommands",
         "ImportGeometryModel", "ExecuteGeometryProcessing", "ExecuteGeometryMatching",
-        "ExecuteMeshGeneration", "ShowGeometry", "ShowMesh", "CloseSession", "DeleteVolumeByName", "SavePpcf", "GetMeshQuality", "ImportPpcf",
+        "ExecuteMeshGeneration", "ShowGeometry", "ShowMesh", "CloseSession", "DeleteVolumeByName", "SavePpcf", "GetMeshQuality", "ImportPpcf", "ExportMeshToVtu",
         "GetVolumeListNames", "GetFaceGroupNamesByVolume", "GetUnmatchedVolumeNames", "RefreshSessionData",
         "GetMeshWindowHandle", "ResetMeshCamera", "RenderMesh", "SetMeshSize",
         "ToggleMeshEdges", "SetMeshRepresentation", "ToggleMeshWireframe",
@@ -83,6 +83,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_client(new Sock
     m_savePathEdit = new QLineEdit();
     m_savePathEdit->setPlaceholderText("SavePpcf 保存路径（必填）");
     cmdRow->addWidget(m_savePathEdit);
+    cmdLayout->addLayout(cmdRow);
+
+    cmdRow = new QHBoxLayout();
+    cmdRow->addWidget(new QLabel("vtuPath:"));
+    m_vtuPathEdit = new QLineEdit();
+    m_vtuPathEdit->setPlaceholderText("ExportMeshToVtu 导出路径（必填，如 F:/Project/T1230/T1230_mesh.vtu）");
+    cmdRow->addWidget(m_vtuPathEdit);
     cmdLayout->addLayout(cmdRow);
 
     cmdRow = new QHBoxLayout();
@@ -200,6 +207,24 @@ void MainWindow::onSend() {
             sp = jp.endsWith(".json") ? jp.left(jp.size() - 5) + ".ppcf" : (jp.endsWith(".ppcf") ? jp : jp + ".ppcf");
         }
         if (!sp.isEmpty()) params["savePath"] = sp.toStdString();
+    } else if (cmd == "ExportMeshToVtu") {
+        QString vp = m_vtuPathEdit->text().trimmed();
+        if (vp.isEmpty()) {
+            QString jp = m_jsonPathEdit->text().trimmed();
+            QString base = jp;
+            if (base.endsWith(".json")) base = base.left(base.size() - 5);
+            else if (base.endsWith(".ppcf")) base = base.left(base.size() - 5);
+            if (!base.isEmpty()) vp = base + "_mesh.vtu";
+        }
+        if (!vp.isEmpty()) params["vtuPath"] = vp.toStdString();
+        // ppcfPath 可选：不填则服务端复用当前网格会话
+        QString ppcf = m_ppcfPathEdit->text().trimmed();
+        if (ppcf.isEmpty()) {
+            QString jp = m_jsonPathEdit->text().trimmed();
+            if (!jp.isEmpty())
+                ppcf = jp.endsWith(".json") ? jp.left(jp.size() - 5) + ".ppcf" : (jp.endsWith(".ppcf") ? jp : jp + ".ppcf");
+        }
+        if (!ppcf.isEmpty()) params["ppcfPath"] = ppcf.toStdString();
     } else if (cmd == "CloseSession") {
         params["sessionId"] = m_sessionIdEdit->text().trimmed().toStdString();
     } else if (cmd == "DeleteVolumeByName") {

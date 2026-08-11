@@ -209,7 +209,7 @@ bool VolumeProcessor::executeGeometryProcessing(const ProcessOptions& options)
 	if (options.enableQuickRepair)
 	{
 		printProgress("正在执行快速修复操作...");
-		if (m_geometryAPI->quickRepair(1e-5))
+		if (m_geometryAPI->quickRepair(options.repairTolerance))
 		{
 			printProgress("快速修复操作成功完成！");
 			m_successfulRepairCount++;
@@ -242,6 +242,11 @@ bool VolumeProcessor::executeGeometryProcessing(const ProcessOptions& options)
 
 bool VolumeProcessor::executeGeometryMatching(ProjectModelData* modelData, bool verboseLog)
 {
+	return executeGeometryMatching(modelData, m_defaultOptions.repairTolerance, verboseLog);
+}
+
+bool VolumeProcessor::executeGeometryMatching(ProjectModelData* modelData, double tolerance, bool verboseLog)
+{
 	if (!m_geometryProcessor)
 	{
 		setError("几何处理器未初始化");
@@ -261,7 +266,7 @@ bool VolumeProcessor::executeGeometryMatching(ProjectModelData* modelData, bool 
 
 	std::unordered_map<std::string, std::vector<std::string>> volumeFaceGroupsMap;
 	m_lastUnmatchedVolumeNames.clear();
-	if (!m_geometryProcessor->analyzeVolumes(modelData, m_defaultOptions.repairTolerance, &m_geometryModel, &volumeFaceGroupsMap, &m_lastUnmatchedVolumeNames, verboseLog))
+	if (!m_geometryProcessor->analyzeVolumes(modelData, tolerance, &m_geometryModel, &volumeFaceGroupsMap, &m_lastUnmatchedVolumeNames, verboseLog))
 	{
 		setError("几何识别匹配失败");
 		return false;
