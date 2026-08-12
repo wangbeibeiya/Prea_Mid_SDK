@@ -66,7 +66,7 @@ MappingGeometry 通过 Socket 提供 JSON 格式的命令接口，外部程序�
 | **ExecuteMeshGeneration** | 执行网格划分 | `jsonPath`: 项目 JSON 路径（必填）<br>`sessionId`: 可选，复用几何 session 的 GeometryAPI<br>`ppcfPath`: 可选，几何 ppcf 路径（空则从 json 推导） | `message` |
 | **GetMeshQuality** | 获取网格质量 | `ppcfPath`: 包含网格的 ppcf 路径（必填） | `elementCount`, `invalidCount`, `worstQuality`, `bestQuality`, `averageQuality`, `qualityRanges` |
 | **ImportPpcf** | 导入 ppcf 并刷新顶层数据 | `ppcfPath`: ppcf 文件路径（必填）<br>`importMode`: "geometry" 使用 `openDocument`（默认）/ "mesh" 使用 `importMesh` | `message`, `ppcfPath`, `importMode` |
-| **ExportMeshToVtu** | 导出网格到 VTU（.vtu） | `vtuPath`: 导出的 .vtu 路径（必填）<br>`ppcfPath`: 可选，包含网格的 ppcf；为空则复用 ExecuteMeshGeneration/ImportPpcf 后的网格会话 | `message`, `vtuPath`, `ppcfPath`(可选) |
+| **ExportMeshToVtu** | 导出网格到 VTU / VTM | `vtuPath`: 导出路径（必填，.vtu 或 .vtm）<br>`splitByVolume`: 可选，true 时按体各写一个 `{stem}_i.vtu` 并生成 `{stem}.vtm`（路径以 `.vtm` 结尾时自动开启）<br>`ppcfPath`: 可选，包含网格的 ppcf；为空则复用网格会话 | 单文件：`vtuPath`<br>按体：`vtmPath`, `vtuPaths`, `volumeNames` |
 
 ---
 
@@ -221,14 +221,21 @@ MappingGeometry 通过 Socket 提供 JSON 格式的命令接口，外部程序�
 
 **ExportMeshToVtu**
 ```json
-// 请求（传 ppcfPath：直接从该文件读取网格并导出）
+// 请求（单文件 .vtu）
 {"command": "ExportMeshToVtu", "params": {"vtuPath": "F:/Project/T1230/T1230_mesh.vtu", "ppcfPath": "F:/Project/T1230/T1230.ppcf"}}
 
-// 请求（不传 ppcfPath：复用 ExecuteMeshGeneration 或 ImportPpcf 后的 GeometryAPI）
-{"command": "ExportMeshToVtu", "params": {"vtuPath": "F:/Project/T1230/T1230_mesh.vtu"}}
+// 请求（按体拆分：每个体一个 .vtu + 一个 .vtm 索引；体名写在 DataSet name 上）
+{"command": "ExportMeshToVtu", "params": {"vtuPath": "F:/Project/T1230/PostData/TestPro-83.vtm", "splitByVolume": true}}
+// 等价：路径以 .vtm 结尾时自动 splitByVolume=true
+{"command": "ExportMeshToVtu", "params": {"vtuPath": "F:/Project/T1230/PostData/TestPro-83.vtm"}}
 
-// 响应
-{"success": true, "message": "已导出 vtu: F:/Project/T1230/T1230_mesh.vtu", "vtuPath": "F:/Project/T1230/T1230_mesh.vtu"}
+// 单文件响应
+{"success": true, "message": "已导出 vtu: ...", "vtuPath": "F:/Project/T1230/T1230_mesh.vtu"}
+
+// 按体响应（生成 TestPro-83.vtm、TestPro-83_0.vtu、TestPro-83_1.vtu ...）
+{"success": true, "vtmPath": "F:/Project/T1230/PostData/TestPro-83.vtm",
+ "vtuPaths": ["F:/Project/T1230/PostData/TestPro-83_0.vtu", "..."],
+ "volumeNames": ["AutoSet_xxx", "..."], "splitByVolume": true}
 ```
 
 **GetMeshQuality**

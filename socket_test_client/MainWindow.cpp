@@ -88,8 +88,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_client(new Sock
     cmdRow = new QHBoxLayout();
     cmdRow->addWidget(new QLabel("vtuPath:"));
     m_vtuPathEdit = new QLineEdit();
-    m_vtuPathEdit->setPlaceholderText("ExportMeshToVtu 导出路径（必填，如 F:/Project/T1230/T1230_mesh.vtu）");
+    m_vtuPathEdit->setPlaceholderText("ExportMeshToVtu：.vtu 单文件，或 .vtm / 勾选按体拆分");
     cmdRow->addWidget(m_vtuPathEdit);
+    m_splitByVolumeCheck = new QCheckBox("按体拆分(VTM)");
+    m_splitByVolumeCheck->setChecked(true);
+    m_splitByVolumeCheck->setToolTip("ExportMeshToVtu：每个体一个 .vtu，并生成 .vtm 索引（体名在 DataSet name）");
+    cmdRow->addWidget(m_splitByVolumeCheck);
     cmdLayout->addLayout(cmdRow);
 
     cmdRow = new QHBoxLayout();
@@ -209,14 +213,17 @@ void MainWindow::onSend() {
         if (!sp.isEmpty()) params["savePath"] = sp.toStdString();
     } else if (cmd == "ExportMeshToVtu") {
         QString vp = m_vtuPathEdit->text().trimmed();
+        const bool splitByVolume = m_splitByVolumeCheck && m_splitByVolumeCheck->isChecked();
         if (vp.isEmpty()) {
             QString jp = m_jsonPathEdit->text().trimmed();
             QString base = jp;
             if (base.endsWith(".json")) base = base.left(base.size() - 5);
             else if (base.endsWith(".ppcf")) base = base.left(base.size() - 5);
-            if (!base.isEmpty()) vp = base + "_mesh.vtu";
+            if (!base.isEmpty())
+                vp = splitByVolume ? (base + ".vtm") : (base + "_mesh.vtu");
         }
         if (!vp.isEmpty()) params["vtuPath"] = vp.toStdString();
+        params["splitByVolume"] = splitByVolume;
         // ppcfPath 可选：不填则服务端复用当前网格会话
         QString ppcf = m_ppcfPathEdit->text().trimmed();
         if (ppcf.isEmpty()) {

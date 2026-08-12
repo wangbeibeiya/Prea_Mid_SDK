@@ -21,7 +21,7 @@
 #include <iomanip>
 #include <thread>
 #include <set>
-#include <map>
+#include <cctype>
 #include <json.hpp>
 
 #include <vtkSmartPointer.h>
@@ -30,7 +30,6 @@
 #include <vtkCellType.h>
 #include <vtkXMLUnstructuredGridWriter.h>
 #include <vtkIntArray.h>
-#include <vtkStringArray.h>
 #include <vtkCellData.h>
 
 extern "C" {
@@ -86,7 +85,76 @@ static bool reloadMeshGeometryApiFromPpcf(const std::string& ppcfPath, std::uniq
 
 } // namespace
 
-static bool exportMeshPfDataToVtu(const PREPRO_BASE_NAMESPACE::PFData& data, const std::string& vtuPath, std::string* errorOut)
+static void collectAllMeshGroups(const PREPRO_BASE_NAMESPACE::PFData& data,
+    std::vector<PREPRO_BASE_NAMESPACE::PFGroup*>& groupsOut)
+{
+    groupsOut.clear();
+    std::set<PREPRO_BASE_NAMESPACE::PFGroup*> seenGroups;
+    groupsOut.reserve(static_cast<size_t>(data.getGroupSize()) + 64);
+
+    if (data.getGroupSize() > 0)
+    {
+        auto** gs = data.getGroups();
+        for (unsigned int i = 0; i < data.getGroupSize(); ++i)
+        {
+            if (gs && gs[i] && seenGroups.insert(gs[i]).second)
+                groupsOut.push_back(gs[i]);
+        }
+    }
+
+    if (data.getVolumeSize() > 0)
+    {
+        auto** vols = data.getVolumes();
+        for (unsigned int i = 0; i < data.getVolumeSize(); ++i)
+        {
+            auto* v = vols ? vols[i] : nullptr;
+            if (!v) continue;
+            auto** vgs = v->getGroups();
+            for (unsigned int j = 0; j < v->getGroupSize(); ++j)
+            {
+                auto* g = vgs ? vgs[j] : nullptr;
+                if (g && seenGroups.insert(g).second)
+                    groupsOut.push_back(g);
+            }
+        }
+    }
+}
+
+static void collectGroupsForVolume(const PREPRO_BASE_NAMESPACE::PFData& data,
+    PREPRO_BASE_NAMESPACE::PFVolume* volume,
+    const std::string& volumeName,
+    std::vector<PREPRO_BASE_NAMESPACE::PFGroup*>& groupsOut)
+{
+    groupsOut.clear();
+    std::set<PREPRO_BASE_NAMESPACE::PFGroup*> seenGroups;
+    if (volume)
+    {
+        auto** vgs = volume->getGroups();
+        for (unsigned int j = 0; j < volume->getGroupSize(); ++j)
+        {
+            auto* g = vgs ? vgs[j] : nullptr;
+            if (g && seenGroups.insert(g).second)
+                groupsOut.push_back(g);
+        }
+    }
+
+    // 顶层组名与体名相同时一并纳入（部分网格数据仅挂在顶层）
+    if (!volumeName.empty() && data.getGroupSize() > 0)
+    {
+        auto** gs = data.getGroups();
+        for (unsigned int i = 0; i < data.getGroupSize(); ++i)
+        {
+            auto* g = (gs && gs[i]) ? gs[i] : nullptr;
+            if (!g || !seenGroups.insert(g).second) continue;
+            const char* gnameC = g->getName();
+            if (gnameC && gnameC[0] && volumeName == gnameC)
+                groupsOut.push_back(g);
+        }
+    }
+}
+
+static bool exportGroupsToVtu(const std::vector<PREPRO_BASE_NAMESPACE::PFGroup*>& groupsToExport,
+    const std::string& vtuPath, std::string* errorOut)
 {
     try
     {
@@ -112,77 +180,22 @@ static bool exportMeshPfDataToVtu(const PREPRO_BASE_NAMESPACE::PFData& data, con
         groupIdArr->SetName("group_id");
         grid->GetCellData()->AddArray(groupIdArr);
 
-        vtkSmartPointer<vtkStringArray> groupNameArr = vtkSmartPointer<vtkStringArray>::New();
-        groupNameArr->SetName("group_name");
-        grid->GetCellData()->AddArray(groupNameArr);
-
-        vtkSmartPointer<vtkStringArray> volumeNameArr = vtkSmartPointer<vtkStringArray>::New();
-        volumeNameArr->SetName("volume_name");
-        grid->GetCellData()->AddArray(volumeNameArr);
-
-        // 收集 group 指针，避免重复（volume 内 groups 可能与顶层 groups 重叠）
-        // group -> 所属体名（无所属体则为空）
-        std::vector<PREPRO_BASE_NAMESPACE::PFGroup*> groupsToExport;
-        groupsToExport.reserve(static_cast<size_t>(data.getGroupSize()) + 64);
-        std::set<PREPRO_BASE_NAMESPACE::PFGroup*> seenGroups;
-        std::map<PREPRO_BASE_NAMESPACE::PFGroup*, std::string> groupToVolumeName;
-
-        if (data.getVolumeSize() > 0)
-        {
-            auto** vols = data.getVolumes();
-            for (unsigned int i = 0; i < data.getVolumeSize(); ++i)
-            {
-                auto* v = vols ? vols[i] : nullptr;
-                if (!v) continue;
-                const char* vnameC = v->getName();
-                std::string vname = (vnameC && vnameC[0]) ? std::string(vnameC)
-                    : ("Volume_" + std::to_string(v->getId()));
-                auto** vgs = v->getGroups();
-                for (unsigned int j = 0; j < v->getGroupSize(); ++j)
-                {
-                    auto* g = vgs ? vgs[j] : nullptr;
-                    if (!g) continue;
-                    groupToVolumeName[g] = vname;
-                    if (seenGroups.insert(g).second)
-                        groupsToExport.push_back(g);
-                }
-            }
-        }
-
-        if (data.getGroupSize() > 0)
-        {
-            auto** gs = data.getGroups();
-            for (unsigned int i = 0; i < data.getGroupSize(); ++i)
-            {
-                if (gs && gs[i] && seenGroups.insert(gs[i]).second)
-                    groupsToExport.push_back(gs[i]);
-            }
-        }
-
         vtkIdType pointOffset = 0;
         for (auto* group : groupsToExport)
         {
             if (!group) continue;
-            const char* gnameC = group->getName();
-            std::string gname = (gnameC && gnameC[0]) ? std::string(gnameC) : ("Group_" + std::to_string(group->getId()));
             int gid = static_cast<int>(group->getId());
-            std::string vname;
-            auto vit = groupToVolumeName.find(group);
-            if (vit != groupToVolumeName.end())
-                vname = vit->second;
 
             const size_t nPts = group->getVertexSize();
             double* vtx = group->getVertexes();
             if (nPts == 0 || !vtx) continue;
 
-            // 追加点
             for (size_t pi = 0; pi < nPts; ++pi)
             {
                 const size_t idx = 3 * pi;
                 points->InsertNextPoint(vtx[idx], vtx[idx + 1], vtx[idx + 2]);
             }
 
-            // 追加单元
             const size_t nElems = group->getElementSize();
             PREPRO_BASE_NAMESPACE::PFElement** elems = group->getElements();
             if (nElems == 0 || !elems)
@@ -199,7 +212,6 @@ static bool exportMeshPfDataToVtu(const PREPRO_BASE_NAMESPACE::PFData& data, con
                 unsigned int* vids = e->getVertexes();
                 if (nv == 0 || !vids) continue;
 
-                // 映射到全局点索引（group 内索引 + offset）
                 std::vector<vtkIdType> cellIds;
                 cellIds.reserve(nv);
                 bool valid = true;
@@ -223,8 +235,6 @@ static bool exportMeshPfDataToVtu(const PREPRO_BASE_NAMESPACE::PFData& data, con
 
                 grid->InsertNextCell(vtkCellType, static_cast<vtkIdType>(cellIds.size()), cellIds.data());
                 groupIdArr->InsertNextValue(gid);
-                groupNameArr->InsertNextValue(gname.c_str());
-                volumeNameArr->InsertNextValue(vname.c_str());
             }
 
             pointOffset += static_cast<vtkIdType>(nPts);
@@ -244,6 +254,191 @@ static bool exportMeshPfDataToVtu(const PREPRO_BASE_NAMESPACE::PFData& data, con
     catch (const std::exception& e)
     {
         if (errorOut) *errorOut = std::string("导出 vtu 异常: ") + e.what();
+        return false;
+    }
+}
+
+static bool exportMeshPfDataToVtu(const PREPRO_BASE_NAMESPACE::PFData& data, const std::string& vtuPath, std::string* errorOut)
+{
+    std::vector<PREPRO_BASE_NAMESPACE::PFGroup*> groupsToExport;
+    collectAllMeshGroups(data, groupsToExport);
+    return exportGroupsToVtu(groupsToExport, vtuPath, errorOut);
+}
+
+static std::string xmlEscapeAttr(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s)
+    {
+        switch (c)
+        {
+        case '&': out += "&amp;"; break;
+        case '"': out += "&quot;"; break;
+        case '<': out += "&lt;"; break;
+        case '>': out += "&gt;"; break;
+        default: out += c; break;
+        }
+    }
+    return out;
+}
+
+// 按体各写一个 .vtu，并生成 vtkMultiBlockDataSet 的 .vtm（体名写在 DataSet name 上）
+static bool exportMeshPfDataToVtm(const PREPRO_BASE_NAMESPACE::PFData& data, const std::string& pathIn,
+    std::string* vtmPathOut, std::vector<std::string>* vtuPathsOut, std::vector<std::string>* volumeNamesOut,
+    std::string* errorOut)
+{
+    try
+    {
+        std::filesystem::path inPath(pathIn);
+        if (inPath.empty())
+        {
+            if (errorOut) *errorOut = "vtuPath 为空";
+            return false;
+        }
+
+        std::filesystem::path dir = inPath.has_parent_path() ? inPath.parent_path() : std::filesystem::path(".");
+        std::string stem = inPath.stem().string();
+        // 若传入 xxx.vtm / xxx.vtu，均以 stem 为前缀；兼容传入已是无扩展名的基名
+        {
+            std::string ext = inPath.extension().string();
+            for (char& c : ext) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+            if (ext != ".vtu" && ext != ".vtm" && !ext.empty())
+                stem = inPath.filename().string();
+        }
+
+        if (dir != "." && !dir.empty())
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+        }
+
+        if (data.getVolumeSize() == 0)
+        {
+            // 无体时退化为单文件 vtu + 单条目 vtm
+            std::filesystem::path vtuPath = dir / (stem + "_0.vtu");
+            std::filesystem::path vtmPath = dir / (stem + ".vtm");
+            if (!exportMeshPfDataToVtu(data, vtuPath.string(), errorOut))
+                return false;
+
+            std::ofstream ofs(vtmPath.string(), std::ios::binary);
+            if (!ofs)
+            {
+                if (errorOut) *errorOut = "无法写入 vtm: " + vtmPath.string();
+                return false;
+            }
+            ofs << "<?xml version=\"1.0\"?>\n";
+            ofs << "<VTKFile type=\"vtkMultiBlockDataSet\" version=\"1.0\" byte_order=\"LittleEndian\" header_type=\"UInt32\">\n";
+            ofs << "  <vtkMultiBlockDataSet>\n";
+            ofs << "    <DataSet index=\"0\" name=\"mesh\" file=\"" << xmlEscapeAttr(vtuPath.filename().string()) << "\"/>\n";
+            ofs << "  </vtkMultiBlockDataSet>\n";
+            ofs << "</VTKFile>\n";
+            ofs.close();
+
+            if (vtmPathOut) *vtmPathOut = vtmPath.string();
+            if (vtuPathsOut) vtuPathsOut->push_back(vtuPath.string());
+            if (volumeNamesOut) volumeNamesOut->push_back("mesh");
+            return true;
+        }
+
+        struct VolEntry
+        {
+            std::string volumeName;
+            std::string relFile;
+            std::string absPath;
+        };
+        std::vector<VolEntry> entries;
+        entries.reserve(static_cast<size_t>(data.getVolumeSize()));
+
+        auto** vols = data.getVolumes();
+        int exportIndex = 0;
+        for (unsigned int i = 0; i < data.getVolumeSize(); ++i)
+        {
+            auto* v = vols ? vols[i] : nullptr;
+            if (!v) continue;
+            const char* vnameC = v->getName();
+            std::string vname = (vnameC && vnameC[0]) ? std::string(vnameC)
+                : ("Volume_" + std::to_string(v->getId()));
+
+            std::vector<PREPRO_BASE_NAMESPACE::PFGroup*> groups;
+            collectGroupsForVolume(data, v, vname, groups);
+            if (groups.empty())
+                continue;
+
+            // 先探测是否有单元；全空则跳过，避免生成空块
+            bool hasCells = false;
+            for (auto* g : groups)
+            {
+                if (g && g->getElementSize() > 0 && g->getVertexSize() > 0)
+                {
+                    hasCells = true;
+                    break;
+                }
+            }
+            if (!hasCells)
+                continue;
+
+            std::string relFile = stem + "_" + std::to_string(exportIndex) + ".vtu";
+            std::filesystem::path absPath = dir / relFile;
+            std::string err;
+            if (!exportGroupsToVtu(groups, absPath.string(), &err))
+            {
+                if (errorOut) *errorOut = err.empty() ? ("导出体失败: " + vname) : err;
+                return false;
+            }
+
+            VolEntry e;
+            e.volumeName = vname;
+            e.relFile = relFile;
+            e.absPath = absPath.string();
+            entries.push_back(std::move(e));
+            ++exportIndex;
+        }
+
+        if (entries.empty())
+        {
+            if (errorOut) *errorOut = "未找到可导出的体网格数据";
+            return false;
+        }
+
+        std::filesystem::path vtmPath = dir / (stem + ".vtm");
+        std::ofstream ofs(vtmPath.string(), std::ios::binary);
+        if (!ofs)
+        {
+            if (errorOut) *errorOut = "无法写入 vtm: " + vtmPath.string();
+            return false;
+        }
+        ofs << "<?xml version=\"1.0\"?>\n";
+        ofs << "<VTKFile type=\"vtkMultiBlockDataSet\" version=\"1.0\" byte_order=\"LittleEndian\" header_type=\"UInt32\">\n";
+        ofs << "  <vtkMultiBlockDataSet>\n";
+        for (size_t i = 0; i < entries.size(); ++i)
+        {
+            ofs << "    <DataSet index=\"" << i
+                << "\" name=\"" << xmlEscapeAttr(entries[i].volumeName)
+                << "\" file=\"" << xmlEscapeAttr(entries[i].relFile) << "\"/>\n";
+        }
+        ofs << "  </vtkMultiBlockDataSet>\n";
+        ofs << "</VTKFile>\n";
+        ofs.close();
+
+        if (vtmPathOut) *vtmPathOut = vtmPath.string();
+        if (vtuPathsOut)
+        {
+            vtuPathsOut->clear();
+            for (const auto& e : entries)
+                vtuPathsOut->push_back(e.absPath);
+        }
+        if (volumeNamesOut)
+        {
+            volumeNamesOut->clear();
+            for (const auto& e : entries)
+                volumeNamesOut->push_back(e.volumeName);
+        }
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        if (errorOut) *errorOut = std::string("导出 vtm 异常: ") + e.what();
         return false;
     }
 }
@@ -1433,11 +1628,20 @@ json ModelProcessingServer::handleExportMeshToVtu(const json& params)
     json response;
     std::string vtuPath = params.value("vtuPath", "");
     std::string ppcfPath = params.value("ppcfPath", "");
+    bool splitByVolume = params.value("splitByVolume", false);
+    // 路径以 .vtm 结尾时自动按体拆分并生成索引
+    {
+        std::filesystem::path p(vtuPath);
+        std::string ext = p.extension().string();
+        for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (ext == ".vtm")
+            splitByVolume = true;
+    }
 
     if (vtuPath.empty())
     {
         response["success"] = false;
-        response["error"] = "缺少 vtuPath 参数（导出的 .vtu 文件路径）";
+        response["error"] = "缺少 vtuPath 参数（导出的 .vtu/.vtm 路径）";
         if (m_logger) m_logger->logOutputLine("[ExportMeshToVtu] 失败: " + response["error"].get<std::string>());
         return response;
     }
@@ -1543,6 +1747,32 @@ json ModelProcessingServer::handleExportMeshToVtu(const json& params)
     }
 
     std::string err;
+    if (splitByVolume)
+    {
+        std::string vtmPath;
+        std::vector<std::string> vtuPaths;
+        std::vector<std::string> volumeNames;
+        if (!exportMeshPfDataToVtm(meshData, vtuPath, &vtmPath, &vtuPaths, &volumeNames, &err))
+        {
+            response["success"] = false;
+            response["error"] = err.empty() ? "导出 vtm/vtu 失败" : err;
+            if (m_logger) m_logger->logOutputLine("[ExportMeshToVtu] 失败: " + response["error"].get<std::string>());
+            return response;
+        }
+
+        response["success"] = true;
+        response["message"] = "已按体导出 " + std::to_string(vtuPaths.size()) + " 个 vtu，并生成 vtm: " + vtmPath;
+        response["vtmPath"] = vtmPath;
+        response["vtuPaths"] = vtuPaths;
+        response["volumeNames"] = volumeNames;
+        response["splitByVolume"] = true;
+        if (!ppcfPath.empty()) response["ppcfPath"] = ppcfPath;
+        if (m_logger)
+            m_logger->logOutputLine("[ExportMeshToVtu] 成功(按体): vtm=" + vtmPath
+                + ", count=" + std::to_string(vtuPaths.size()));
+        return response;
+    }
+
     if (!exportMeshPfDataToVtu(meshData, vtuPath, &err))
     {
         response["success"] = false;
@@ -1554,6 +1784,7 @@ json ModelProcessingServer::handleExportMeshToVtu(const json& params)
     response["success"] = true;
     response["message"] = "已导出 vtu: " + vtuPath;
     response["vtuPath"] = vtuPath;
+    response["splitByVolume"] = false;
     if (!ppcfPath.empty()) response["ppcfPath"] = ppcfPath;
     if (m_logger) m_logger->logOutputLine("[ExportMeshToVtu] 成功: " + vtuPath);
     return response;

@@ -40,6 +40,7 @@ private:
     QLineEdit* m_ppcfPathEdit;
     QLineEdit* m_savePathEdit;
     QLineEdit* m_vtuPathEdit;
+    QCheckBox* m_splitByVolumeCheck;
     QLineEdit* m_sessionIdEdit;
     QLineEdit* m_volumeNameEdit;
     QLineEdit* m_opacityEdit;
